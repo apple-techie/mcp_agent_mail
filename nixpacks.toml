@@ -16,5 +16,5 @@ cmds = [
 ]
 
 [start]
-# Prefer the explicit HTTP app factory entrypoint
-cmd = "uvicorn mcp_agent_mail.http:build_http_app --factory --host 0.0.0.0 --port ${PORT:-8765}"
+# Run uvicorn from the synced virtualenv so the executable is always available at runtime
+cmd = "./.venv/bin/python -m uvicorn mcp_agent_mail.http:build_http_app --factory --host 0.0.0.0 --port ${PORT:-8765}"
