@@ -4,14 +4,14 @@
 PORT = "8765"
 
 [phases.setup]
-# Ensure common build tools are present; python3 is provided by base
-nixPkgs = ["gcc", "openssl", "pkg-config"]
+# Ensure common build tools are present; include curl to fetch uv binary installer
+nixPkgs = ["gcc", "openssl", "pkg-config", "curl"]
 
 [phases.install]
-# Use uv to install Python 3.14 and sync the project environment per pyproject/uv.lock
+# Install uv as a standalone binary (no system Python needed), then provision Python 3.14 and sync
 cmds = [
-  "python -m pip install --upgrade pip",
-  "pip install uv==0.4.30",
+  "curl -LsSf https://astral.sh/uv/install.sh | sh",
+  "export PATH=$HOME/.local/bin:$PATH",
   "uv python install 3.14",
   "UV_PYTHON=3.14 UV_PYTHON_DOWNLOADS=always uv sync --no-dev --frozen"
 ]
