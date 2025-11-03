@@ -11,9 +11,8 @@ nixPkgs = ["gcc", "openssl", "pkg-config", "curl"]
 # Install uv as a standalone binary (no system Python needed), then provision Python 3.14 and sync
 cmds = [
   "curl -LsSf https://astral.sh/uv/install.sh | sh",
-  "export PATH=$HOME/.local/bin:$PATH",
-  "uv python install 3.14",
-  "UV_PYTHON=3.14 UV_PYTHON_DOWNLOADS=always uv sync --no-dev --frozen"
+  "export PATH=$HOME/.local/bin:$PATH && $HOME/.local/bin/uv python install 3.14",
+  "UV_PYTHON=3.14 UV_PYTHON_DOWNLOADS=true $HOME/.local/bin/uv sync --no-dev --frozen"
 ]
 
 [start]
