@@ -33,7 +33,7 @@ from .app import (
     update_project_sibling_status,
 )
 from .config import Settings, get_settings
-from .db import ensure_schema, get_session
+from .db import ensure_schema, get_backend_name, get_session
 from .storage import (
     archive_write_lock,
     collect_lock_status,
@@ -1332,48 +1332,38 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                 )
                 agents = [{"id": r[0], "name": r[1], "program": r[2], "model": r[3]} for r in agents_q.fetchall()]
                 matched_messages: list[dict] = []
+                backend = get_backend_name()
+                tokens: list[dict[str, str]] = []
                 if q and q.strip():
-                    # Prefer FTS5 when available (fts_messages maintained by triggers)
                     fts_expr, like_pat, like_scope, tokens = _parse_fts_query(q, scope)
                     weights = (0.0, 3.0, 1.0) if (boost or 0) else (0.0, 1.0, 1.0)
-                    fts_sql = (
-                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
-                        "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18) AS body_snippet, "
-                        "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18)) - length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18), '<mark>', ''))) / 6 AS hits "
-                        "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
-                        "WHERE m.project_id = :pid AND fts_messages MATCH :q "
-                        + (
-                            "ORDER BY m.created_ts DESC "
-                            if (order or "relevance") == "time"
-                            else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
-                        )
-                        + "LIMIT 50"
-                    )
-                    try:
-                        search = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q})
-                        matched_messages = [
-                            {
-                                "id": r[0],
-                                "subject": r[1],
-                                "sender": r[2],
-                                "created": str(r[3]),
-                                "importance": r[4],
-                                "thread_id": r[5],
-                                "snippet": r[6],
-                                "hits": int(r[7] or 0),
-                            }
-                            for r in search.fetchall()
-                        ]
-                    except Exception:
-                        # Fallback to LIKE if FTS not available
+
+                    async def _run_like_fallback() -> list[dict]:
                         if like_scope == "subject":
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.subject LIKE :pat ORDER BY m.created_ts DESC LIMIT 50"
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND m.subject LIKE :pat "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
                         elif like_scope == "body":
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.body_md LIKE :pat ORDER BY m.created_ts DESC LIMIT 50"
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND m.body_md LIKE :pat "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
                         else:
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) ORDER BY m.created_ts DESC LIMIT 50"
-                        search = await session.execute(text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%"})
-                        matched_messages = [
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
+                        rows = await session.execute(
+                            text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%"}
+                        )
+                        return [
                             {
                                 "id": r[0],
                                 "subject": r[1],
@@ -1384,8 +1374,81 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                                 "snippet": "",
                                 "hits": 0,
                             }
-                            for r in search.fetchall()
+                            for r in rows.fetchall()
                         ]
+
+                    if "sqlite" in backend:
+                        fts_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                            "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18) AS body_snippet, "
+                            "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18)) - "
+                            "length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18), '<mark>', ''))) / 6 AS hits "
+                            "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND fts_messages MATCH :q "
+                            + (
+                                "ORDER BY m.created_ts DESC "
+                                if (order or "relevance") == "time"
+                                else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
+                            )
+                            + "LIMIT 50"
+                        )
+                        try:
+                            search = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q})
+                            matched_messages = [
+                                {
+                                    "id": r[0],
+                                    "subject": r[1],
+                                    "sender": r[2],
+                                    "created": str(r[3]),
+                                    "importance": r[4],
+                                    "thread_id": r[5],
+                                    "snippet": r[6],
+                                    "hits": int(r[7] or 0),
+                                }
+                                for r in search.fetchall()
+                            ]
+                        except Exception:
+                            matched_messages = await _run_like_fallback()
+                    elif backend.startswith("postgres"):
+                        order_mode = (order or "relevance") or "relevance"
+                        rank_expr = "ts_rank_cd(m.search_vector, websearch_to_tsquery('english', :q))"
+                        snippet_expr = (
+                            "ts_headline('english', m.body_md, websearch_to_tsquery('english', :q), "
+                            "'StartSel=<mark>, StopSel=</mark>, HighlightAll=true, MaxFragments=3, MaxWords=18, MinWords=3')"
+                        )
+                        order_clause = (
+                            "ORDER BY m.created_ts DESC "
+                            if order_mode == "time"
+                            else f"ORDER BY {rank_expr} DESC, m.created_ts DESC "
+                        )
+                        pg_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                            f"{snippet_expr} AS body_snippet, "
+                            f"{rank_expr} AS search_rank "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.search_vector @@ websearch_to_tsquery('english', :q) "
+                            + order_clause
+                            + "LIMIT 50"
+                        )
+                        try:
+                            rows = await session.execute(text(pg_sql), {"pid": pid, "q": q})
+                            matched_messages = [
+                                {
+                                    "id": r[0],
+                                    "subject": r[1],
+                                    "sender": r[2],
+                                    "created": str(r[3]),
+                                    "importance": r[4],
+                                    "thread_id": r[5],
+                                    "snippet": r[6] or "",
+                                    "hits": 0,
+                                }
+                                for r in rows.fetchall()
+                            ]
+                        except Exception:
+                            matched_messages = await _run_like_fallback()
+                    else:
+                        matched_messages = await _run_like_fallback()
             return await _render(
                 "mail_project.html",
                 project={"id": pid, "slug": prow[1], "human_key": prow[2]},
@@ -1972,47 +2035,37 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                 if not prow:
                     return await _render("error.html", message="Project not found")
                 pid = int(prow[0])
+                backend = get_backend_name()
+                tokens = []
                 fts_expr, like_pat, like_scope, tokens = _parse_fts_query(q, scope)
                 weights = (0.0, 3.0, 1.0) if (boost or 0) else (0.0, 1.0, 1.0)
-                fts_sql = (
-                    "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
-                    "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22) AS body_snippet, "
-                    "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22)) - length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22), '<mark>', ''))) / 6 AS hits "
-                    "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
-                    "WHERE m.project_id = :pid AND fts_messages MATCH :q "
-                    + (
-                        "ORDER BY m.created_ts DESC "
-                        if (order or "relevance") == "time"
-                        else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
-                    )
-                    + "LIMIT :lim"
-                )
-                try:
-                    rows = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q, "lim": limit})
-                    results = [
-                        {
-                            "id": r[0],
-                            "subject": r[1],
-                            "from": r[2],
-                            "created": str(r[3]),
-                            "importance": r[4],
-                            "thread_id": r[5],
-                            "snippet": r[6],
-                            "hits": int(r[7] or 0),
-                        }
-                        for r in rows.fetchall()
-                    ]
-                except Exception:
+
+                async def _run_like_fallback() -> list[dict]:
                     if like_scope == "subject":
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.subject LIKE :pat ORDER BY m.created_ts DESC LIMIT :lim"
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.subject LIKE :pat "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
                     elif like_scope == "body":
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.body_md LIKE :pat ORDER BY m.created_ts DESC LIMIT :lim"
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.body_md LIKE :pat "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
                     else:
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) ORDER BY m.created_ts DESC LIMIT :lim"
-                    rows = await session.execute(
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
+                    rows_local = await session.execute(
                         text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%", "lim": limit}
                     )
-                    results = [
+                    return [
                         {
                             "id": r[0],
                             "subject": r[1],
@@ -2023,8 +2076,81 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                             "snippet": "",
                             "hits": 0,
                         }
-                        for r in rows.fetchall()
+                        for r in rows_local.fetchall()
                     ]
+
+                if "sqlite" in backend:
+                    fts_sql = (
+                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                        "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22) AS body_snippet, "
+                        "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22)) - "
+                        "length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22), '<mark>', ''))) / 6 AS hits "
+                        "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
+                        "WHERE m.project_id = :pid AND fts_messages MATCH :q "
+                        + (
+                            "ORDER BY m.created_ts DESC "
+                            if (order or "relevance") == "time"
+                            else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
+                        )
+                        + "LIMIT :lim"
+                    )
+                    try:
+                        rows = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q, "lim": limit})
+                        results = [
+                            {
+                                "id": r[0],
+                                "subject": r[1],
+                                "from": r[2],
+                                "created": str(r[3]),
+                                "importance": r[4],
+                                "thread_id": r[5],
+                                "snippet": r[6],
+                                "hits": int(r[7] or 0),
+                            }
+                            for r in rows.fetchall()
+                        ]
+                    except Exception:
+                        results = await _run_like_fallback()
+                elif backend.startswith("postgres"):
+                    order_mode = (order or "relevance") or "relevance"
+                    rank_expr = "ts_rank_cd(m.search_vector, websearch_to_tsquery('english', :q))"
+                    snippet_expr = (
+                        "ts_headline('english', m.body_md, websearch_to_tsquery('english', :q), "
+                        "'StartSel=<mark>, StopSel=</mark>, HighlightAll=true, MaxFragments=3, MaxWords=22, MinWords=3')"
+                    )
+                    order_clause = (
+                        "ORDER BY m.created_ts DESC "
+                        if order_mode == "time"
+                        else f"ORDER BY {rank_expr} DESC, m.created_ts DESC "
+                    )
+                    pg_sql = (
+                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                        f"{snippet_expr} AS body_snippet, "
+                        f"{rank_expr} AS search_rank "
+                        "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                        "WHERE m.project_id = :pid AND m.search_vector @@ websearch_to_tsquery('english', :q) "
+                        + order_clause
+                        + "LIMIT :lim"
+                    )
+                    try:
+                        rows = await session.execute(text(pg_sql), {"pid": pid, "q": q, "lim": limit})
+                        results = [
+                            {
+                                "id": r[0],
+                                "subject": r[1],
+                                "from": r[2],
+                                "created": str(r[3]),
+                                "importance": r[4],
+                                "thread_id": r[5],
+                                "snippet": r[6] or "",
+                                "hits": 0,
+                            }
+                            for r in rows.fetchall()
+                        ]
+                    except Exception:
+                        results = await _run_like_fallback()
+                else:
+                    results = await _run_like_fallback()
             return await _render(
                 "mail_search.html",
                 project={"slug": prow[1], "human_key": prow[2]},

@@ -924,11 +924,15 @@ This section has been removed to keep the README focused. See API Quick Referenc
 
 ## Security and ops
 
+- Database
+  - The default SQLite backend is ideal for local smoke tests, but for multi-agent production usage switch to PostgreSQL via `DATABASE_URL`. The server now auto-configures `tsvector` search indexes when it detects a Postgres URL (full-text search routes fall back to SQL LIKE if needed).
+  - When running on Postgres, ensure the application container can reach the database host directly (e.g., Dokploy service DNS such as `mcp-agent-mail-db-xxxxx`) and that credentials are supplied through the environment.
 - Transport
   - HTTP-only (Streamable HTTP). Place behind a reverse proxy (e.g., NGINX) with TLS termination for production
 - Auth
   - Optional JWT (HS*/JWKS) via HTTP middleware; enable with `HTTP_JWT_ENABLED=true`
   - Static bearer token (`HTTP_BEARER_TOKEN`) is independent of JWT; when set, BearerAuth protects all routes (including UI). You may use it alone or together with JWT.
+  - For production deployments disable unauthenticated localhost access (`HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED=false`) so that every request (including the web UI) must present credentials.
   - When JWKS is configured (`HTTP_JWT_JWKS_URL`), incoming JWTs must include a matching `kid` header; tokens without `kid` or with unknown `kid` are rejected
   - Starter RBAC (reader vs writer) using role configuration; see `HTTP_RBAC_*` settings
 - Reverse proxy + TLS (minimal example)

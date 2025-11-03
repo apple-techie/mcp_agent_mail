@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from functools import wraps
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Mapping, Optional, cast
 
 from fastmcp import Context, FastMCP
 from git import Repo
@@ -26,7 +26,7 @@ from sqlalchemy.orm import aliased
 
 from . import rich_logger
 from .config import Settings, get_settings
-from .db import ensure_schema, get_session, init_engine
+from .db import ensure_schema, get_backend_name, get_session, init_engine
 from .guard import install_guard as install_guard_script, uninstall_guard as uninstall_guard_script
 from .llm import complete_system_user
 from .models import Agent, AgentLink, FileReservation, Message, MessageRecipient, Project, ProjectSiblingSuggestion
@@ -4069,22 +4069,81 @@ def build_mcp_server() -> FastMCP:
             raise ValueError("Project must have an id before searching messages.")
         await ensure_schema()
         async with get_session() as session:
-            result = await session.execute(
-                text(
+            backend = get_backend_name()
+
+            async def _run_like_fallback() -> list[Mapping[str, Any]]:
+                like_pattern = f"%{query}%"
+                if "sqlite" in backend:
+                    like_sql = """
+                        SELECT m.id, m.subject, m.body_md, m.importance, m.ack_required, m.created_ts,
+                               m.thread_id, a.name AS sender_name
+                        FROM messages m
+                        JOIN agents a ON m.sender_id = a.id
+                        WHERE m.project_id = :project_id
+                          AND (m.subject LIKE :pattern OR m.body_md LIKE :pattern)
+                        ORDER BY m.created_ts DESC
+                        LIMIT :limit
                     """
-                    SELECT m.id, m.subject, m.body_md, m.importance, m.ack_required, m.created_ts,
-                           m.thread_id, a.name AS sender_name
-                    FROM fts_messages
-                    JOIN messages m ON fts_messages.rowid = m.id
-                    JOIN agents a ON m.sender_id = a.id
-                    WHERE m.project_id = :project_id AND fts_messages MATCH :query
-                    ORDER BY bm25(fts_messages) ASC
-                    LIMIT :limit
+                else:
+                    like_sql = """
+                        SELECT m.id, m.subject, m.body_md, m.importance, m.ack_required, m.created_ts,
+                               m.thread_id, a.name AS sender_name
+                        FROM messages m
+                        JOIN agents a ON m.sender_id = a.id
+                        WHERE m.project_id = :project_id
+                          AND (m.subject ILIKE :pattern OR m.body_md ILIKE :pattern)
+                        ORDER BY m.created_ts DESC
+                        LIMIT :limit
                     """
-                ),
-                {"project_id": project.id, "query": query, "limit": limit},
-            )
-            rows = result.mappings().all()
+                fallback_result = await session.execute(
+                    text(like_sql),
+                    {"project_id": project.id, "pattern": like_pattern, "limit": limit},
+                )
+                return fallback_result.mappings().all()
+
+            if "sqlite" in backend:
+                try:
+                    result = await session.execute(
+                        text(
+                            """
+                            SELECT m.id, m.subject, m.body_md, m.importance, m.ack_required, m.created_ts,
+                                   m.thread_id, a.name AS sender_name
+                            FROM fts_messages
+                            JOIN messages m ON fts_messages.rowid = m.id
+                            JOIN agents a ON m.sender_id = a.id
+                            WHERE m.project_id = :project_id AND fts_messages MATCH :query
+                            ORDER BY bm25(fts_messages) ASC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"project_id": project.id, "query": query, "limit": limit},
+                    )
+                    rows = result.mappings().all()
+                except Exception:
+                    rows = await _run_like_fallback()
+            elif backend.startswith("postgres"):
+                try:
+                    result = await session.execute(
+                        text(
+                            """
+                            SELECT m.id, m.subject, m.body_md, m.importance, m.ack_required, m.created_ts,
+                                   m.thread_id, a.name AS sender_name,
+                                   ts_rank_cd(m.search_vector, websearch_to_tsquery('english', :query)) AS search_rank
+                            FROM messages m
+                            JOIN agents a ON m.sender_id = a.id
+                            WHERE m.project_id = :project_id
+                              AND m.search_vector @@ websearch_to_tsquery('english', :query)
+                            ORDER BY search_rank DESC, m.created_ts DESC
+                            LIMIT :limit
+                            """
+                        ),
+                        {"project_id": project.id, "query": query, "limit": limit},
+                    )
+                    rows = result.mappings().all()
+                except Exception:
+                    rows = await _run_like_fallback()
+            else:
+                rows = await _run_like_fallback()
         await ctx.info(f"Search '{query}' returned {len(rows)} messages for project '{project.human_key}'.")
         if get_settings().tools_log_enabled:
             try:
