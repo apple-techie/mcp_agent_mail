@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hmac
 import importlib
 import json
 import logging
@@ -18,7 +19,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.exc import NoResultFound
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -143,6 +144,84 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         if auth_header != f"Bearer {self._token}":
             return JSONResponse({"detail": "Unauthorized"}, status_code=status.HTTP_401_UNAUTHORIZED)
         return await call_next(request)
+
+
+class BasicAuthUpgradeMiddleware(BaseHTTPMiddleware):
+    """Optional Basic Auth handler that swaps credentials for the configured bearer token.
+
+    Designed for environments where a reverse proxy cannot inject the bearer header. Requests
+    hitting configured path prefixes receive a Basic challenge; valid credentials are rewritten
+    into the expected bearer token so the rest of the stack remains unchanged.
+    """
+
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        username: str,
+        password: str,
+        bearer_token: str,
+        realm: str,
+        path_prefixes: list[str],
+    ) -> None:
+        super().__init__(app)
+        self._username = username
+        self._password = password
+        self._realm = realm or "Agent Mail"
+        self._bearer_token = bearer_token
+        normalized = []
+        for prefix in path_prefixes or []:
+            prefix = prefix.strip()
+            if not prefix:
+                continue
+            if not prefix.startswith("/"):
+                prefix = "/" + prefix
+            if len(prefix) > 1 and prefix.endswith("/"):
+                prefix = prefix[:-1]
+            normalized.append(prefix)
+        self._paths = normalized or ["/mail"]
+
+    def _path_matches(self, path: str) -> bool:
+        return any(path == prefix or path.startswith(prefix + "/") for prefix in self._paths)
+
+    def _inject_bearer(self, scope: Scope) -> None:
+        header_value = f"Bearer {self._bearer_token}".encode("latin1")
+        headers = list(scope["headers"])
+        for idx, (key, _) in enumerate(headers):
+            if key == b"authorization":
+                headers[idx] = (b"authorization", header_value)
+                break
+        else:
+            headers.append((b"authorization", header_value))
+        scope["headers"] = headers
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+        if request.method == "OPTIONS" or request.url.path.startswith("/health/"):
+            return await call_next(request)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return await call_next(request)
+        if not self._path_matches(request.url.path):
+            return await call_next(request)
+        if auth_header.startswith("Basic "):
+            payload = auth_header.split(" ", 1)[1]
+            try:
+                decoded = base64.b64decode(payload).decode("utf-8")
+                username, password = decoded.split(":", 1)
+            except Exception:
+                return PlainTextResponse(
+                    "Invalid credentials",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    headers={"WWW-Authenticate": f'Basic realm="{self._realm}"'},
+                )
+            if hmac.compare_digest(username, self._username) and hmac.compare_digest(password, self._password):
+                self._inject_bearer(request.scope)
+                return await call_next(request)
+        return PlainTextResponse(
+            "Authentication required",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": f'Basic realm="{self._realm}"'},
+        )
 
 
 class SecurityAndRateLimitMiddleware(BaseHTTPMiddleware):
@@ -829,6 +908,20 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
         or getattr(settings.http, "rbac_enabled", True)
     ):
         fastapi_app.add_middleware(SecurityAndRateLimitMiddleware, settings=settings)
+    if (
+        settings.http.basic_auth_enabled
+        and settings.http.basic_auth_username
+        and settings.http.basic_auth_password
+        and settings.http.bearer_token
+    ):
+        fastapi_app.add_middleware(
+            BasicAuthUpgradeMiddleware,
+            username=settings.http.basic_auth_username,
+            password=settings.http.basic_auth_password,
+            bearer_token=settings.http.bearer_token,
+            realm=settings.http.basic_auth_realm or "Agent Mail",
+            path_prefixes=settings.http.basic_auth_path_prefixes or [],
+        )
     # Bearer auth for non-localhost only; allow localhost unauth optionally for seamless local dev
     if settings.http.bearer_token:
         fastapi_app.add_middleware(

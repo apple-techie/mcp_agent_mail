@@ -49,6 +49,11 @@ class HttpSettings:
     rbac_writer_roles: list[str]
     rbac_default_role: str
     rbac_readonly_tools: list[str]
+    basic_auth_enabled: bool
+    basic_auth_username: str
+    basic_auth_password: str
+    basic_auth_realm: str
+    basic_auth_path_prefixes: list[str]
     # Dev convenience
     allow_localhost_unauthenticated: bool
 
@@ -217,6 +222,11 @@ def get_settings() -> Settings:
             "HTTP_RBAC_READONLY_TOOLS",
             default="health_check,fetch_inbox,whois,search_messages,summarize_thread,summarize_threads",
         ),
+        basic_auth_enabled=_bool(_decouple_config("HTTP_BASIC_AUTH_ENABLED", default="false"), default=False),
+        basic_auth_username=_decouple_config("HTTP_BASIC_AUTH_USERNAME", default=""),
+        basic_auth_password=_decouple_config("HTTP_BASIC_AUTH_PASSWORD", default=""),
+        basic_auth_realm=_decouple_config("HTTP_BASIC_AUTH_REALM", default="Agent Mail"),
+        basic_auth_path_prefixes=_csv("HTTP_BASIC_AUTH_PATHS", default="/mail"),
         allow_localhost_unauthenticated=_bool(_decouple_config("HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED", default="true"), default=True),
     )
 
