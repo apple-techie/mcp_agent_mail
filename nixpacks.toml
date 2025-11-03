@@ -1,0 +1,21 @@
+# Nixpacks build plan for MCP Agent Mail
+
+[variables]
+PORT = "8765"
+
+[phases.setup]
+# Ensure common build tools are present; python3 is provided by base
+nixPkgs = ["gcc", "openssl", "pkg-config"]
+
+[phases.install]
+# Use uv to install Python 3.14 and sync the project environment per pyproject/uv.lock
+cmds = [
+  "python -m pip install --upgrade pip",
+  "pip install uv==0.4.30",
+  "uv python install 3.14",
+  "UV_PYTHON=3.14 UV_PYTHON_DOWNLOADS=always uv sync --no-dev --frozen"
+]
+
+[start]
+# Prefer the explicit HTTP app factory entrypoint
+cmd = "uvicorn mcp_agent_mail.http:build_http_app --factory --host 0.0.0.0 --port ${PORT:-8765}"
