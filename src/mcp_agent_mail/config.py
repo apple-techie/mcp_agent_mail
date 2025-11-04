@@ -7,10 +7,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final
 
-from decouple import Config as DecoupleConfig, RepositoryEnv
+from decouple import Config as DecoupleConfig, RepositoryEnv, config as decouple_autoconfig
 
 _DOTENV_PATH: Final[Path] = Path(".env")
-_decouple_config: Final[DecoupleConfig] = DecoupleConfig(RepositoryEnv(str(_DOTENV_PATH)))
+
+# Use AutoConfig to gracefully fall back to environment variables if .env is missing
+# This is critical for Docker/container deployments where .env may not be mounted
+if _DOTENV_PATH.exists():
+    _decouple_config: Final[DecoupleConfig] = DecoupleConfig(RepositoryEnv(str(_DOTENV_PATH)))
+else:
+    # Fall back to environment variables only (no .env file)
+    _decouple_config: Final[DecoupleConfig] = decouple_autoconfig  # type: ignore[assignment]
 
 
 @dataclass(slots=True, frozen=True)
