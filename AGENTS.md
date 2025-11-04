@@ -56,6 +56,8 @@ We need to AVOID uncontrolled proliferation of code files. If you want to change
 
 We want all console output to be informative, detailed, stylish, colorful, etc. by fully leveraging the rich library wherever possible.
 
+> **Hosted MCP Endpoint:** Production lives at `https://mcp.gauntlit.ai/mcp/`. Always export `MCP_MAIL_URL` accordingly and pass your bearer token via `MCP_MAIL_BEARER_TOKEN` (never commit it). The `/mail` UI prompts with Basic auth (`agent / GauntLit25`) and upgrades to the bearer token automatically.
+
 If you aren't 100% sure about how to use a third party library, then you must SEARCH ONLINE to find the latest documentation website for the library to understand how it is supposed to work and the latest (mid-2025) suggested best practices and usage.
 
 **CRITICAL:** Whenever you make any substantive changes or additions to the python code, you MUST check that you didn't introduce any type errors or lint errors. You can do this by running the following two commands:
@@ -139,4 +141,3 @@ Event mirroring (optional automation)
 Pitfalls to avoid
 - Don’t create or manage tasks in Mail; treat Beads as the single task queue.
 - Always include `bd-###` in message `thread_id` to avoid ID drift across tools.
-

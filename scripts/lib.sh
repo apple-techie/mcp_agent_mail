@@ -55,6 +55,9 @@ parse_common_flags() {
   if [[ "${DEBUG}" == "1" ]]; then set -x; fi
 }
 
+# Default remote MCP endpoint (used unless MCP_MAIL_URL overrides)
+DEFAULT_MCP_MAIL_URL="https://mcp.gauntlit.ai/mcp/"
+
 # Traps and diagnostics
 setup_traps() {
   if [[ "${DEBUG:-0}" == "1" ]]; then
@@ -67,6 +70,39 @@ setup_traps() {
 require_cmd() {
   local cmd="$1"; shift || true
   command -v "$cmd" >/dev/null 2>&1 || { log_err "Missing dependency: $cmd"; exit 1; }
+}
+
+# Resolve the MCP Agent Mail URL (prefers MCP_MAIL_URL env override)
+resolve_mcp_mail_url() {
+  local url="${MCP_MAIL_URL:-$DEFAULT_MCP_MAIL_URL}"
+  if [[ -z "$url" ]]; then
+    log_err "Unable to resolve MCP endpoint (set MCP_MAIL_URL)."
+    exit 1
+  fi
+  echo "$url"
+}
+
+# Helper to detect if a URL points to localhost-style hosts
+is_local_mcp_mail_url() {
+  local url="$1"
+  [[ "$url" == http://127.0.0.1* || "$url" == http://localhost* || "$url" == http://0.0.0.0* ]]
+}
+
+# Fetch bearer token, preferring env vars, falling back to .env or interactive prompt
+require_mcp_mail_token() {
+  local token="${MCP_MAIL_BEARER_TOKEN:-${HTTP_BEARER_TOKEN:-}}"
+  if [[ -z "$token" && -f .env ]]; then
+    token=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//' ) || true
+  fi
+  if [[ -z "$token" && -t 0 ]]; then
+    read -rsp "Enter MCP Agent Mail bearer token (input hidden): " token || true
+    echo
+  fi
+  if [[ -z "$token" ]]; then
+    log_err "Missing bearer token. Set MCP_MAIL_BEARER_TOKEN (or HTTP_BEARER_TOKEN) or run interactively."
+    exit 1
+  fi
+  echo "$token"
 }
 
 # Atomic write: read content from stdin and atomically move to target
@@ -489,5 +525,4 @@ start_server_background() {
   fi
   _print "Server starting (logs: ${log_file})"
 }
-
 

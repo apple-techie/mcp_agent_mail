@@ -22,6 +22,8 @@ uv sync
 ```
 
 ### Running the Server
+> Hosted: The canonical MCP Agent Mail instance runs at `https://mcp.gauntlit.ai/mcp/`. Export `MCP_MAIL_URL`/`MCP_MAIL_BEARER_TOKEN` before running integration scripts; you generally do **not** need to start a local server unless you are developing new features. The `/mail` UI is available via Basic auth (`agent/GauntLit25`) and automatically upgrades to the bearer token.
+
 ```bash
 # Development server (HTTP-only)
 uv run python -m mcp_agent_mail.cli serve-http --host 127.0.0.1 --port 8765

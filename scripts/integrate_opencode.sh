@@ -34,6 +34,8 @@ if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
 
+_MCP_URL_OVERRIDE="$(resolve_mcp_mail_url)"
+
 log_step "Resolving HTTP endpoint from settings"
 eval "$(uv run python - <<'PY'
 from mcp_agent_mail.config import get_settings
@@ -51,22 +53,15 @@ fi
 
 _URL="http://${_HTTP_HOST}:${_HTTP_PORT}${_HTTP_PATH}"
 log_ok "Detected MCP HTTP endpoint: ${_URL}"
+if [[ -n "${_MCP_URL_OVERRIDE}" ]]; then
+  _URL="${_MCP_URL_OVERRIDE}"
+  log_ok "Overriding with MCP_MAIL_URL: ${_URL}"
+fi
 
 # Determine or generate bearer token
 _TOKEN="${INTEGRATION_BEARER_TOKEN:-}"
-if [[ -z "${_TOKEN}" && -f .env ]]; then
-  _TOKEN=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
-fi
 if [[ -z "${_TOKEN}" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
-    _TOKEN=$(openssl rand -hex 32)
-  else
-    _TOKEN=$(uv run python - <<'PY'
-import secrets; print(secrets.token_hex(32))
-PY
-)
-  fi
-  log_ok "Generated bearer token."
+  _TOKEN="$(require_mcp_mail_token)"
 fi
 
 # Create run helper script
@@ -105,10 +100,11 @@ write_atomic "$WRAPPER" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-URL="${MCP_MAIL_URL:-http://127.0.0.1:8765/mcp}"
+URL="${MCP_MAIL_URL:-https://mcp.gauntlit.ai/mcp/}"
 AUTH=()
-if [[ -n "${HTTP_BEARER_TOKEN:-}" ]]; then
-  AUTH=( -H "Authorization: Bearer ${HTTP_BEARER_TOKEN}" )
+_TOKEN="${MCP_MAIL_BEARER_TOKEN:-${HTTP_BEARER_TOKEN:-}}"
+if [[ -n "${_TOKEN}" ]]; then
+  AUTH=( -H "Authorization: Bearer ${_TOKEN}" )
 fi
 
 METHOD="${1:-}"
@@ -152,40 +148,27 @@ esac
 SH
 set_secure_exec "$WRAPPER" || true
 
-# Readiness check (bounded)
-log_step "Attempt readiness check (bounded)"
-if readiness_poll "${_HTTP_HOST}" "${_HTTP_PORT}" "/health/readiness" 3 0.5; then
-  _rc=0; log_ok "Server readiness OK."
-else
-  _rc=1; log_warn "Server not reachable. Start with: uv run python -m mcp_agent_mail.cli serve-http"
-fi
-
 # Bootstrap ensure_project + register_agent (best-effort)
 log_step "Bootstrapping project and agent on server"
-if [[ $_rc -ne 0 ]]; then
-  log_warn "Skipping bootstrap: server not reachable (ensure_project/register_agent)."
+_AUTH_ARGS=("-H" "Authorization: Bearer ${_TOKEN}")
+
+_HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
+_AGENT_ESCAPED=$(json_escape_string "${USER:-opencode}") || { log_err "Failed to escape agent name"; exit 1; }
+
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Ensured project on server"
 else
-  _AUTH_ARGS=()
-  if [[ -n "${_TOKEN}" ]]; then _AUTH_ARGS+=("-H" "Authorization: Bearer ${_TOKEN}"); fi
+  log_warn "Failed to ensure project (remote server unavailable?)"
+fi
 
-  _HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
-  _AGENT_ESCAPED=$(json_escape_string "${USER:-opencode}") || { log_err "Failed to escape agent name"; exit 1; }
-
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Ensured project on server"
-  else
-    log_warn "Failed to ensure project (server may be starting)"
-  fi
-
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"opencode\",\"model\":\"default\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Registered agent on server"
-  else
-    log_warn "Failed to register agent (server may be starting)"
-  fi
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"opencode\",\"model\":\"default\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Registered agent on server"
+else
+  log_warn "Failed to register agent (remote server unavailable?)"
 fi
 
 echo
@@ -194,5 +177,3 @@ _print "Created scripts/mcp_mail_http.sh. Map OpenCode custom commands to call i
 _print "  resources/read 'resource://inbox/<Agent>?project=<abs-path>&limit=10'"
 _print "  tools/call '{\"name\":\"macro_start_session\",\"arguments\":{\"human_key\":\"/abs/path\"}}'"
 _print "Start the server with: ${RUN_HELPER}"
-
-

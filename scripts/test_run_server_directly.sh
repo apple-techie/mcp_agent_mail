@@ -3,7 +3,16 @@
 
 set -euo pipefail
 
-export HTTP_BEARER_TOKEN="5dcdbc3a02da090e38ae1889ac508a582752e9e88898f769854882a4aef83693"
+if [[ -z "${HTTP_BEARER_TOKEN:-}" ]]; then
+  if [[ -f .env ]]; then
+    HTTP_BEARER_TOKEN=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
+  fi
+fi
+if [[ -z "${HTTP_BEARER_TOKEN:-}" ]]; then
+  echo "Set HTTP_BEARER_TOKEN (or create it in .env) before running this script." >&2
+  exit 1
+fi
+export HTTP_BEARER_TOKEN
 
 echo "========================================"
 echo "Running server with direct Python call"

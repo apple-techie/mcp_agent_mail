@@ -23,7 +23,7 @@ echo "  1) Detect your MCP HTTP endpoint from settings."
 echo "  2) Auto-generate a bearer token if missing and export it at runtime."
 echo "  3) Create scripts/run_server_with_token.sh to start the server with the token."
 echo "  4) Write a project-local cline.mcp.json you can import/configure in Cline."
-echo "  5) Attempt a readiness check and bootstrap ensure_project/register_agent."
+echo "  5) Bootstrap ensure_project/register_agent on the remote server."
 echo
 
 TARGET_DIR="${PROJECT_DIR:-}"
@@ -31,6 +31,8 @@ if [[ -z "${TARGET_DIR}" ]]; then TARGET_DIR="${ROOT_DIR}"; fi
 if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
+
+_MCP_URL_OVERRIDE="$(resolve_mcp_mail_url)"
 
 log_step "Resolving HTTP endpoint from settings"
 eval "$(uv run python - <<'PY'
@@ -49,38 +51,27 @@ if [[ -z "${_HTTP_HOST}" || -z "${_HTTP_PORT}" || -z "${_HTTP_PATH}" ]]; then
 fi
 
 _URL="http://${_HTTP_HOST}:${_HTTP_PORT}${_HTTP_PATH}"
+if [[ -n "${_MCP_URL_OVERRIDE}" ]]; then
+  _URL="${_MCP_URL_OVERRIDE}"
+fi
 log_ok "Detected MCP HTTP endpoint: ${_URL}"
 
 # Determine or generate bearer token
 _TOKEN="${INTEGRATION_BEARER_TOKEN:-}"
-if [[ -z "${_TOKEN}" && -f .env ]]; then
-  _TOKEN=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
-fi
 if [[ -z "${_TOKEN}" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
-    _TOKEN=$(openssl rand -hex 32)
-  else
-    _TOKEN=$(uv run python - <<'PY'
-import secrets; print(secrets.token_hex(32))
-PY
-)
-  fi
-  log_ok "Generated bearer token."
+  _TOKEN="$(require_mcp_mail_token)"
 fi
 
 # Write project-local Cline MCP config snippet
 OUT_JSON="${TARGET_DIR}/cline.mcp.json"
 backup_file "$OUT_JSON"
 log_step "Writing ${OUT_JSON}"
-AUTH_HEADER_LINE=''  # localhost may allow unauthenticated; include if token present
-if [[ -n "${_TOKEN}" ]]; then
-  AUTH_HEADER_LINE="      \"headers\": { \"Authorization\": \"Bearer ${_TOKEN}\" },"
-fi
+AUTH_HEADER_LINE=$'      "headers": { "Authorization": "Bearer '"${_TOKEN}"$'" },'
 write_atomic "$OUT_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
+      "type": "streamable_http",
       "url": "${_URL}",
 ${AUTH_HEADER_LINE}
       "note": "Import or configure this server in Cline's MCP settings"
@@ -120,40 +111,27 @@ uv run python -m mcp_agent_mail.cli serve-http "$@"
 SH
 set_secure_exec "$RUN_HELPER" || true
 
-# Readiness check (bounded)
-log_step "Attempt readiness check (bounded)"
-if readiness_poll "${_HTTP_HOST}" "${_HTTP_PORT}" "/health/readiness" 3 0.5; then
-  _rc=0; log_ok "Server readiness OK."
-else
-  _rc=1; log_warn "Server not reachable. Start with: uv run python -m mcp_agent_mail.cli serve-http"
-fi
-
 # Bootstrap ensure_project + register_agent (best-effort)
 log_step "Bootstrapping project and agent on server"
-if [[ $_rc -ne 0 ]]; then
-  log_warn "Skipping bootstrap: server not reachable (ensure_project/register_agent)."
+_AUTH_ARGS=("-H" "Authorization: Bearer ${_TOKEN}")
+
+_HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
+_AGENT_ESCAPED=$(json_escape_string "${USER:-cline}") || { log_err "Failed to escape agent name"; exit 1; }
+
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Ensured project on server"
 else
-  _AUTH_ARGS=()
-  if [[ -n "${_TOKEN}" ]]; then _AUTH_ARGS+=("-H" "Authorization: Bearer ${_TOKEN}"); fi
+  log_warn "Failed to ensure project (remote server unavailable?)"
+fi
 
-  _HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
-  _AGENT_ESCAPED=$(json_escape_string "${USER:-cline}") || { log_err "Failed to escape agent name"; exit 1; }
-
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Ensured project on server"
-  else
-    log_warn "Failed to ensure project (server may be starting)"
-  fi
-
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"cline\",\"model\":\"default\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Registered agent on server"
-  else
-    log_warn "Failed to register agent (server may be starting)"
-  fi
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"cline\",\"model\":\"default\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Registered agent on server"
+else
+  log_warn "Failed to register agent (remote server unavailable?)"
 fi
 
 echo
@@ -168,5 +146,3 @@ else
   _print "  - Header: (optional on localhost if server allows)"
 fi
 _print "Then start the server with: ${RUN_HELPER}"
-
-

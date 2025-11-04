@@ -216,7 +216,11 @@ The server ships a lightweight, server‑rendered Web UI for humans. It lets you
 
 ### Launching the Web UI
 
-Recommended (simple):
+Recommended (hosted):
+
+- Visit `https://mcp.gauntlit.ai/mail` (Basic auth user `agent`, password `GauntLit25`). The middleware will convert the Basic credentials into the required bearer token automatically, so you do **not** need to paste secrets into the browser.
+
+Local development (simple):
 
 ```bash
 scripts/run_server_with_token.sh
@@ -872,7 +876,19 @@ Common variables you may set:
 
 `python-decouple` reads exclusively from a `.env` file located in the working directory. **The file must exist**, even inside containers – if it is missing, the server exits with `FileNotFoundError`. In development copy `.env.example` → `.env` and fill in the values you need. In production (Dokploy, Docker Swarm, etc.) mount or generate `.env` alongside the application code so the container can read it.
 
-#### Localhost / uv
+#### Hosted (Gauntlit Cloud)
+
+1. Obtain your bearer token from the Gauntlit ops team. **Do not commit it to the repo.**
+2. Export the following variables in any shell where you run integration scripts or manual curl calls:
+   ```bash
+   export MCP_MAIL_URL="https://mcp.gauntlit.ai/mcp/"
+   export MCP_MAIL_BEARER_TOKEN="<your-bearer-token>"
+   ```
+   Optionally set `HTTP_BEARER_TOKEN` to the same value for compatibility with older tooling.
+3. Configure your MCP client by running the `scripts/integrate_*` helper that matches your IDE/agent (Codex, Cursor, Claude Code, Windsurf, etc.). Each helper now reads `MCP_MAIL_URL`/`MCP_MAIL_BEARER_TOKEN` instead of generating new tokens.
+4. The `/mail` UI is served from the same host. Use the Basic credentials `agent / GauntLit25` and the middleware will rewrite the request into your bearer token automatically.
+
+#### Localhost / uv (development only)
 
 1. `cp .env.example .env` and set at least `HTTP_BEARER_TOKEN` plus a database URL (SQLite is fine for single-user).
 2. Install uv and sync dependencies: `uv python install 3.14 && uv venv -p 3.14 && source .venv/bin/activate && uv sync`.
