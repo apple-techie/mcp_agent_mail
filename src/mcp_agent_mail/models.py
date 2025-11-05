@@ -5,9 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Column, UniqueConstraint
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Project(SQLModel, table=True):
@@ -16,7 +20,10 @@ class Project(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     slug: str = Field(index=True, unique=True, max_length=255)
     human_key: str = Field(max_length=255, index=True)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class Agent(SQLModel, table=True):
@@ -29,8 +36,8 @@ class Agent(SQLModel, table=True):
     program: str = Field(max_length=128)
     model: str = Field(max_length=128)
     task_description: str = Field(default="", max_length=2048)
-    inception_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_active_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    inception_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    last_active_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
     attachments_policy: str = Field(default="auto", max_length=16)
     contact_policy: str = Field(default="auto", max_length=16)  # open | auto | contacts_only | block_all
 
@@ -41,8 +48,8 @@ class MessageRecipient(SQLModel, table=True):
     message_id: int = Field(foreign_key="messages.id", primary_key=True)
     agent_id: int = Field(foreign_key="agents.id", primary_key=True)
     kind: str = Field(max_length=8, default="to")
-    read_ts: Optional[datetime] = Field(default=None)
-    ack_ts: Optional[datetime] = Field(default=None)
+    read_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    ack_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
 class Message(SQLModel, table=True):
@@ -56,7 +63,7 @@ class Message(SQLModel, table=True):
     body_md: str
     importance: str = Field(default="normal", max_length=16)
     ack_required: bool = Field(default=False)
-    created_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
     attachments: list[dict[str, Any]] = Field(
         default_factory=list,
         sa_column=Column(JSON, nullable=False, server_default="[]"),
@@ -72,9 +79,9 @@ class FileReservation(SQLModel, table=True):
     path_pattern: str = Field(max_length=512)
     exclusive: bool = Field(default=True)
     reason: str = Field(default="", max_length=512)
-    created_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    expires_ts: datetime
-    released_ts: Optional[datetime] = None
+    created_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_ts: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    released_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
 class AgentLink(SQLModel, table=True):
@@ -93,9 +100,9 @@ class AgentLink(SQLModel, table=True):
     b_agent_id: int = Field(foreign_key="agents.id", index=True)
     status: str = Field(default="pending", max_length=16)  # pending | approved | blocked
     reason: str = Field(default="", max_length=512)
-    created_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    expires_ts: Optional[datetime] = None
+    created_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
 class ProjectSiblingSuggestion(SQLModel, table=True):
@@ -110,7 +117,7 @@ class ProjectSiblingSuggestion(SQLModel, table=True):
     score: float = Field(default=0.0)
     status: str = Field(default="suggested", max_length=16)  # suggested | confirmed | dismissed
     rationale: str = Field(default="", max_length=4096)
-    created_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    evaluated_ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    confirmed_ts: Optional[datetime] = Field(default=None)
-    dismissed_ts: Optional[datetime] = Field(default=None)
+    created_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    evaluated_ts: datetime = Field(default_factory=_utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    confirmed_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    dismissed_ts: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
