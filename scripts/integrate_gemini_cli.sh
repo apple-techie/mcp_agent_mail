@@ -30,6 +30,8 @@ if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
 
+_MCP_URL_OVERRIDE="$(resolve_mcp_mail_url)"
+
 eval "$(uv run python - <<'PY'
 from mcp_agent_mail.config import get_settings
 s = get_settings()
@@ -46,20 +48,12 @@ if [[ -z "${_HTTP_HOST}" || -z "${_HTTP_PORT}" || -z "${_HTTP_PATH}" ]]; then
 fi
 
 _URL="http://${_HTTP_HOST}:${_HTTP_PORT}${_HTTP_PATH}"
-_TOKEN="${INTEGRATION_BEARER_TOKEN:-}"
-if [[ -z "${_TOKEN}" && -f .env ]]; then
-  _TOKEN=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
+if [[ -n "${_MCP_URL_OVERRIDE}" ]]; then
+  _URL="${_MCP_URL_OVERRIDE}"
 fi
+_TOKEN="${INTEGRATION_BEARER_TOKEN:-}"
 if [[ -z "${_TOKEN}" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
-    _TOKEN=$(openssl rand -hex 32)
-  else
-    _TOKEN=$(uv run python - <<'PY'
-import secrets; print(secrets.token_hex(32))
-PY
-)
-  fi
-  log_ok "Generated bearer token."
+  _TOKEN="$(require_mcp_mail_token)"
 fi
 
 OUT_JSON="${TARGET_DIR}/gemini.mcp.json"
@@ -73,7 +67,7 @@ write_atomic "$OUT_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
+      "type": "streamable_http",
       "url": "${_URL}",
       "headers": {${AUTH_HEADER_LINE}}
     }
@@ -127,8 +121,11 @@ write_atomic "$HOME_GEMINI_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
-      "url": "${_URL}"
+      "type": "streamable_http",
+      "url": "${_URL}",
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      }
     }
   }
 }
@@ -137,42 +134,31 @@ JSON
 # Bug 1 fix: Ensure secure permissions
 # Bug #5 fix: set_secure_file logs its own warning, no need to duplicate
 set_secure_file "$HOME_GEMINI_JSON" || true
-log_step "Attempt readiness check (bounded)"
-if readiness_poll "${_HTTP_HOST}" "${_HTTP_PORT}" "/health/readiness" 3 0.5; then
-  _rc=0; log_ok "Server readiness OK."
-else
-  _rc=1; log_warn "Server not reachable. Start with: uv run python -m mcp_agent_mail.cli serve-http"
-fi
 
 log_step "Bootstrapping project and agent on server"
-if [[ $_rc -ne 0 ]]; then
-  log_warn "Skipping bootstrap: server not reachable (ensure_project/register_agent)."
+_AUTH_ARGS=("-H" "Authorization: Bearer ${_TOKEN}")
+
+# Bug 6 fix: Use json_escape_string to safely escape variables
+# Issue #7 fix: Validate escaping succeeded
+_HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
+_AGENT_ESCAPED=$(json_escape_string "${USER:-gemini}") || { log_err "Failed to escape agent name"; exit 1; }
+
+# ensure_project - Bug 16 fix: add logging
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Ensured project on server"
 else
-  _AUTH_ARGS=()
-  if [[ -n "${_TOKEN}" ]]; then _AUTH_ARGS+=("-H" "Authorization: Bearer ${_TOKEN}"); fi
+  log_warn "Failed to ensure project (remote server unavailable?)"
+fi
 
-  # Bug 6 fix: Use json_escape_string to safely escape variables
-  # Issue #7 fix: Validate escaping succeeded
-  _HUMAN_KEY_ESCAPED=$(json_escape_string "${TARGET_DIR}") || { log_err "Failed to escape project path"; exit 1; }
-  _AGENT_ESCAPED=$(json_escape_string "${USER:-gemini}") || { log_err "Failed to escape agent name"; exit 1; }
-
-  # ensure_project - Bug 16 fix: add logging
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"ensure_project\",\"arguments\":{\"human_key\":${_HUMAN_KEY_ESCAPED}}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Ensured project on server"
-  else
-    log_warn "Failed to ensure project (server may be starting)"
-  fi
-
-  # register_agent - Bug 16 fix: add logging
-  if curl -fsS --connect-timeout 1 --max-time 2 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"gemini-cli\",\"model\":\"gemini\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
-      "${_URL}" >/dev/null 2>&1; then
-    log_ok "Registered agent on server"
-  else
-    log_warn "Failed to register agent (server may be starting)"
-  fi
+# register_agent - Bug 16 fix: add logging
+if curl -fsS --connect-timeout 5 --max-time 10 --retry 0 -H "Content-Type: application/json" "${_AUTH_ARGS[@]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/call\",\"params\":{\"name\":\"register_agent\",\"arguments\":{\"project_key\":${_HUMAN_KEY_ESCAPED},\"program\":\"gemini-cli\",\"model\":\"gemini\",\"name\":${_AGENT_ESCAPED},\"task_description\":\"setup\"}}}" \
+    "${_URL}" >/dev/null 2>&1; then
+  log_ok "Registered agent on server"
+else
+  log_warn "Failed to register agent (remote server unavailable?)"
 fi
 
 log_step "Registering MCP server in Gemini (user scope)"
@@ -196,4 +182,3 @@ if command -v gemini >/dev/null 2>&1; then
 else
   log_warn "Gemini CLI not found in PATH; skipped automatic registration."; _print "Run: gemini mcp add -s user -t http mcp-agent-mail ${_URL}"
 fi
-

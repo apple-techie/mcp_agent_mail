@@ -25,31 +25,8 @@ if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
 
-# Ensure token reuse across integrations during one run
 if [[ -z "${INTEGRATION_BEARER_TOKEN:-}" || "${REGENERATE_TOKEN}" == "1" ]]; then
-  if [[ -f .env ]]; then
-    EXISTING=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
-  else
-    EXISTING=""
-  fi
-  if [[ -n "${EXISTING}" ]]; then
-    export INTEGRATION_BEARER_TOKEN="${EXISTING}"
-  else
-    if command -v openssl >/dev/null 2>&1; then
-      export INTEGRATION_BEARER_TOKEN=$(openssl rand -hex 32)
-    else
-      export INTEGRATION_BEARER_TOKEN=$(uv run python - <<'PY'
-import secrets; print(secrets.token_hex(32))
-PY
-)
-    fi
-    log_ok "Generated bearer token for this integration session."
-  fi
-fi
-
-# Persist token to .env for consistency across tools (non-destructive)
-if [[ -n "${INTEGRATION_BEARER_TOKEN:-}" ]]; then
-  update_env_var HTTP_BEARER_TOKEN "${INTEGRATION_BEARER_TOKEN}"
+  export INTEGRATION_BEARER_TOKEN="$(require_mcp_mail_token)"
 fi
 
 log_step "Ensuring archive storage root"
@@ -79,30 +56,6 @@ else
 fi
 
 log_step "Detecting installed agents and applying integrations"
-
-# Start a temporary server in background to allow integrators to bootstrap
-log_step "Starting temporary server (background) for bootstrap"
-eval "$(uv run python - <<'PY'
-from mcp_agent_mail.config import get_settings
-s = get_settings()
-print(f"export _HTTP_HOST='{s.http.host}'")
-print(f"export _HTTP_PORT='{s.http.port}'")
-print(f"export _HTTP_PATH='{s.http.path}'")
-PY
-)"
-_ready_now=1
-if ! readiness_poll "${_HTTP_HOST}" "${_HTTP_PORT}" "/health/readiness" 3 0.5; then
-  _ready_now=0
-fi
-if [[ "${_ready_now}" != "1" ]]; then
-  start_server_background
-  # Wait a bit longer the first time to allow env spin-up
-  if readiness_poll "${_HTTP_HOST}" "${_HTTP_PORT}" "/health/readiness" 20 0.5; then
-    _print "Temporary server is ready for bootstrap."
-  else
-    log_warn "Temporary server not ready; proceeding without bootstrap."
-  fi
-fi
 
 # Parse optional --project-dir to tell integrators where to write client configs
 TARGET_DIR=""

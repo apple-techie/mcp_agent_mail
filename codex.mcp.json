@@ -1,10 +1,11 @@
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/mcp/",
-      "headers": {        "Authorization": "Bearer ${_TOKEN}"
-}
+      "type": "streamable_http",
+      "url": "https://mcp.gauntlit.ai/mcp/",
+      "headers": {
+        "Authorization": "Bearer <SET_MCP_MAIL_BEARER_TOKEN>"
+      }
     }
   }
 }
