@@ -25,6 +25,25 @@ if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
 
+# Hydrate commonly used env vars from .env when not already set
+if [[ -f ".env" ]]; then
+  eval "$(uv run python - <<'PY'
+import os, shlex
+from decouple import Config, RepositoryEnv
+cfg = Config(RepositoryEnv(".env"))
+for key in ("HTTP_BEARER_TOKEN", "MCP_MAIL_BEARER_TOKEN", "MCP_MAIL_URL"):
+    if os.environ.get(key):
+        continue
+    try:
+        value = cfg(key)
+    except Exception:
+        continue
+    if value:
+        print(f"export {key}={shlex.quote(value)}")
+PY
+)"
+fi
+
 if [[ -z "${INTEGRATION_BEARER_TOKEN:-}" || "${REGENERATE_TOKEN}" == "1" ]]; then
   export INTEGRATION_BEARER_TOKEN="$(require_mcp_mail_token)"
 fi
