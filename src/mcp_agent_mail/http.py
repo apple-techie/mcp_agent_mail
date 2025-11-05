@@ -1273,13 +1273,12 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                             p.human_key AS project_name,
                             COALESCE(
                                 (
-                                    SELECT GROUP_CONCAT(name, ', ')
+                                    SELECT STRING_AGG(name, ', ' ORDER BY name)
                                     FROM (
                                         SELECT DISTINCT recip2.name AS name
                                         FROM message_recipients mr2
                                         JOIN agents recip2 ON recip2.id = mr2.agent_id
                                         WHERE mr2.message_id = m.id
-                                        ORDER BY name
                                     ) AS recipient_list
                                 ),
                                 ''
@@ -1688,13 +1687,12 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                         sender.name as sender_name,
                         COALESCE(
                             (
-                                SELECT GROUP_CONCAT(name, ', ')
+                                SELECT STRING_AGG(name, ', ' ORDER BY name)
                                 FROM (
                                     SELECT DISTINCT recip2.name AS name
                                     FROM message_recipients mr2
                                     JOIN agents recip2 ON recip2.id = mr2.agent_id
                                     WHERE mr2.message_id = m.id
-                                    ORDER BY name
                                 ) AS recipient_names
                             ),
                             ''
