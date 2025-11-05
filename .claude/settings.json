@@ -1,22 +1,35 @@
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/mcp/",
-      "headers": {        "Authorization": "Bearer 5dcdbc3a02da090e38ae1889ac508a582752e9e88898f769854882a4aef83693"}
+      "type": "streamable-http",
+      "url": "https://mcp.gauntlit.ai/mcp/",
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer czkyO3K2Z3Aup_81_re78KMt3pXJaTTWNtyUMVYF3Xsx9EhVXI6teREvLM9SRhFP"
+      }
     }
   },
   "hooks": {
     "SessionStart": [
-      { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file-reservations active --project backend" },
-      { "type": "command", "command": "uv run python -m mcp_agent_mail.cli acks pending --project backend --agent ubuntu --limit 20" }
+      { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file_reservations active mcp_agent_mail" },
+      { "type": "command", "command": "uv run python -m mcp_agent_mail.cli acks pending mcp_agent_mail andrewpeltekci --limit 20" }
     ],
     "PreToolUse": [
-      { "matcher": "Edit", "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file-reservations soon --project backend --minutes 10" } ] }
+      { "matcher": "Edit", "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file_reservations soon mcp_agent_mail --minutes 10" } ] }
     ],
     "PostToolUse": [
-      { "matcher": { "tool": "send_message" }, "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli list-acks --project backend --agent ubuntu --limit 10" } ] },
-      { "matcher": { "tool": "reserve_file_paths" }, "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file-reservations list --project backend" } ] }
+      { "matcher": { "tool": "send_message" }, "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli list-acks --project mcp_agent_mail --agent andrewpeltekci --limit 10" } ] },
+      { "matcher": { "tool": "file_reservation_paths" }, "hooks": [ { "type": "command", "command": "uv run python -m mcp_agent_mail.cli file_reservations list mcp_agent_mail" } ] }
     ]
   }
 }

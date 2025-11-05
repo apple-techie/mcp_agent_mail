@@ -1,7 +1,8 @@
 {
-  "mcpServers": {
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "mcp-agent-mail": {
-      "type": "streamable-http",
+      "type": "remote",
       "url": "https://mcp.gauntlit.ai/mcp/",
       "timeout": 60,
       "disabled": false,
@@ -16,7 +17,8 @@
       ],
       "headers": {
         "Authorization": "Bearer czkyO3K2Z3Aup_81_re78KMt3pXJaTTWNtyUMVYF3Xsx9EhVXI6teREvLM9SRhFP"
-      }
+      },
+      "enabled": true
     }
   }
 }

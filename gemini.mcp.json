@@ -1,10 +1,21 @@
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "https://mcp.gauntlit.ai/mcp/",
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
       "headers": {
-        "Authorization": "Bearer <SET_MCP_MAIL_BEARER_TOKEN>"
+        "Authorization": "Bearer czkyO3K2Z3Aup_81_re78KMt3pXJaTTWNtyUMVYF3Xsx9EhVXI6teREvLM9SRhFP"
       }
     }
   }

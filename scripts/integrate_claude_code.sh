@@ -77,14 +77,26 @@ if [[ -f "$SETTINGS_PATH" ]]; then
 fi
 
 log_step "Writing MCP server config and hooks"
-AUTH_HEADER_LINE="        \"Authorization\": \"Bearer ${_TOKEN}\""
 write_atomic "$SETTINGS_PATH" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
-      "headers": {${AUTH_HEADER_LINE}}
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      }
     }
   },
   "hooks": {
@@ -116,9 +128,22 @@ write_atomic "$LOCAL_SETTINGS_PATH" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
-      "headers": {${AUTH_HEADER_LINE}}
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      }
     }
   },
   "hooks": {
@@ -161,7 +186,7 @@ if command -v jq >/dev/null 2>&1; then
 
   umask 077  # Bug 1 fix: secure permissions for temp file
   if jq --arg url "${_URL}" --arg token "${_TOKEN}" \
-      '.mcpServers = (.mcpServers // {}) | .mcpServers["mcp-agent-mail"] = {"type":"http","url":$url,"headers":{"Authorization": ("Bearer " + $token)}}' \
+      '.mcpServers = (.mcpServers // {}) | .mcpServers["mcp-agent-mail"] = {"type":"streamable-http","url":$url,"timeout":60,"disabled":false,"alwaysAllow":["macro_start_session","file_reservation_paths","fetch_inbox","release_file_reservations","acknowledge_message","send_message","mark_message_read"],"headers":{"Authorization": ("Bearer " + $token)}}' \
       "$HOME_SETTINGS_PATH" > "$TMP_MERGE"; then
     # Bug 3 fix: Check mv separately
     if mv "$TMP_MERGE" "$HOME_SETTINGS_PATH"; then
@@ -185,9 +210,22 @@ else
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
-      "headers": {${AUTH_HEADER_LINE}}
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      }
     }
   }
 }

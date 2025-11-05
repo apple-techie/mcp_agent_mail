@@ -58,18 +58,26 @@ fi
 
 OUT_JSON="${TARGET_DIR}/gemini.mcp.json"
 backup_file "$OUT_JSON"
-if [[ -n "${_TOKEN}" ]]; then
-  AUTH_HEADER_LINE="        \"Authorization\": \"Bearer ${_TOKEN}\""
-else
-  AUTH_HEADER_LINE=''
-fi
 write_atomic "$OUT_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
-      "headers": {${AUTH_HEADER_LINE}}
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      }
     }
   }
 }
@@ -121,8 +129,19 @@ write_atomic "$HOME_GEMINI_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
       "headers": {
         "Authorization": "Bearer ${_TOKEN}"
       }

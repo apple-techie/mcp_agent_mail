@@ -66,14 +66,26 @@ fi
 OUT_JSON="${TARGET_DIR}/windsurf.mcp.json"
 backup_file "$OUT_JSON"
 log_step "Writing ${OUT_JSON}"
-AUTH_HEADER_LINE=$'      "headers": { "Authorization": "Bearer '"${_TOKEN}"$'" },'
 write_atomic "$OUT_JSON" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "streamable_http",
+      "type": "streamable-http",
       "url": "${_URL}",
-${AUTH_HEADER_LINE}
+      "timeout": 60,
+      "disabled": false,
+      "alwaysAllow": [
+        "macro_start_session",
+        "file_reservation_paths",
+        "fetch_inbox",
+        "release_file_reservations",
+        "acknowledge_message",
+        "send_message",
+        "mark_message_read"
+      ],
+      "headers": {
+        "Authorization": "Bearer ${_TOKEN}"
+      },
       "note": "Import or configure this server in Windsurf's MCP settings"
     }
   }

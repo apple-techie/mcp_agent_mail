@@ -2,9 +2,9 @@
   "mcpServers": {
     "mcp-agent-mail": {
       "type": "http",
-      "url": "http://127.0.0.1:8765/mcp/",
+      "url": "https://mcp.gauntlit.ai/mcp/",
       "headers": {
-        "Authorization": "Bearer ee9102dcfc58d84b96a22113ac32fbcc757bf0b7e167e97b6d3a3495d1b758cd"
+        "Authorization": "Bearer czkyO3K2Z3Aup_81_re78KMt3pXJaTTWNtyUMVYF3Xsx9EhVXI6teREvLM9SRhFP"
       }
     }
   }

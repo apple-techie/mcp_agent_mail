@@ -89,6 +89,9 @@ if [[ -f "$OPENCODE_JSON" ]] && [[ -s "$OPENCODE_JSON" ]]; then
        .mcp["mcp-agent-mail"] = {
          "type": "remote",
          "url": $url,
+         "timeout": 60,
+         "disabled": false,
+         "alwaysAllow": ["macro_start_session","file_reservation_paths","fetch_inbox","release_file_reservations","acknowledge_message","send_message","mark_message_read"],
          "headers": {
            "Authorization": ("Bearer " + $token)
          },
@@ -119,6 +122,9 @@ else
       "mcp-agent-mail": {
         "type": "remote",
         "url": $url,
+        "timeout": 60,
+        "disabled": false,
+        "alwaysAllow": ["macro_start_session","file_reservation_paths","fetch_inbox","release_file_reservations","acknowledge_message","send_message","mark_message_read"],
         "headers": {
           "Authorization": ("Bearer " + $token)
         },

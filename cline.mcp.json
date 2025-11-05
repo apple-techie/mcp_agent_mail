@@ -16,7 +16,8 @@
       ],
       "headers": {
         "Authorization": "Bearer czkyO3K2Z3Aup_81_re78KMt3pXJaTTWNtyUMVYF3Xsx9EhVXI6teREvLM9SRhFP"
-      }
+      },
+      "note": "Import or configure this server in Cline's MCP settings"
     }
   }
 }
