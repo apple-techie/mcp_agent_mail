@@ -2,6 +2,8 @@
 
 This guide provides step-by-step workflows for AI agents to coordinate effectively using MCP Agent Mail.
 
+> **Hosted Endpoint:** Gauntlit runs a shared MCP Agent Mail instance at `https://mcp.gauntlit.ai/mcp/`. Set `MCP_MAIL_URL` to that value and export `MCP_MAIL_BEARER_TOKEN=<your token>` (never commit it) before calling any tools/resources. Use Basic auth `agent / GauntLit25` for the `/mail` UI if you need to inspect threads in a browser.
+
 ## About This Guide
 
 **Example Format**: Code examples in this guide use simplified pseudo-JSON for clarity. When using MCP tools, your MCP client library will handle the actual JSON-RPC wire protocol. Focus on understanding the tool names, parameters, and workflows shown here.

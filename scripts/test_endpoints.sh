@@ -2,15 +2,21 @@
 set -euo pipefail
 
 # Scripted integration tests for HTTP endpoints using curl.
-# Assumes server is running locally with defaults.
+# Defaults to the hosted MCP endpoint but can be overridden via BASE_URL/MCP_MAIL_URL.
 
-BASE_URL=${BASE_URL:-http://127.0.0.1:8765/mcp/}
+BASE_URL=${BASE_URL:-${MCP_MAIL_URL:-https://mcp.gauntlit.ai/mcp/}}
+BEARER_TOKEN=${MCP_MAIL_BEARER_TOKEN:-${HTTP_BEARER_TOKEN:-}}
+if [[ -z "${BEARER_TOKEN}" ]]; then
+  echo "Set MCP_MAIL_BEARER_TOKEN (or HTTP_BEARER_TOKEN) before running this script." >&2
+  exit 1
+fi
 
 call_tools() {
   local name=$1; shift
   local args_json=$1; shift || true
   curl -sS -X POST "$BASE_URL" \
     -H 'content-type: application/json' \
+    -H "Authorization: Bearer ${BEARER_TOKEN}" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/call\",\"params\":{\"name\":\"$name\",\"arguments\":$args_json}}"
 }
 
@@ -18,6 +24,7 @@ read_resource() {
   local uri=$1; shift
   curl -sS -X POST "$BASE_URL" \
     -H 'content-type: application/json' \
+    -H "Authorization: Bearer ${BEARER_TOKEN}" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"resources/read\",\"params\":{\"uri\":\"$uri\"}}"
 }
 
@@ -36,4 +43,3 @@ echo
 echo "[4/4] Environment resource"
 read_resource 'resource://config/environment'
 echo
-

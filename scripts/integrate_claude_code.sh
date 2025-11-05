@@ -30,6 +30,8 @@ if ! confirm "Proceed?"; then log_warn "Aborted."; exit 1; fi
 
 cd "$ROOT_DIR"
 
+_MCP_URL_OVERRIDE="$(resolve_mcp_mail_url)"
+
 log_step "Resolving HTTP endpoint from settings"
 eval "$(uv run python - <<'PY'
 from mcp_agent_mail.config import get_settings
@@ -47,27 +49,16 @@ if [[ -z "${_HTTP_HOST}" || -z "${_HTTP_PORT}" || -z "${_HTTP_PATH}" ]]; then
 fi
 
 _URL="http://${_HTTP_HOST}:${_HTTP_PORT}${_HTTP_PATH}"
+if [[ -n "${_MCP_URL_OVERRIDE}" ]]; then
+  _URL="${_MCP_URL_OVERRIDE}"
+fi
 log_ok "Detected MCP HTTP endpoint: ${_URL}"
 
 # Determine or generate bearer token (prefer session token provided by orchestrator)
 # Reuse existing token if possible (INTEGRATION_BEARER_TOKEN > .env > run helper)
 _TOKEN="${INTEGRATION_BEARER_TOKEN:-}"
-if [[ -z "${_TOKEN}" && -f .env ]]; then
-  _TOKEN=$(grep -E '^HTTP_BEARER_TOKEN=' .env | sed -E 's/^HTTP_BEARER_TOKEN=//') || true
-fi
-if [[ -z "${_TOKEN}" && -f scripts/run_server_with_token.sh ]]; then
-  _TOKEN=$(grep -E 'export HTTP_BEARER_TOKEN="' scripts/run_server_with_token.sh | sed -E 's/.*HTTP_BEARER_TOKEN="([^"]+)".*/\1/') || true
-fi
 if [[ -z "${_TOKEN}" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
-    _TOKEN=$(openssl rand -hex 32)
-  else
-    _TOKEN=$(uv run python - <<'PY'
-import secrets; print(secrets.token_hex(32))
-PY
-)
-  fi
-  log_ok "Generated bearer token."
+  _TOKEN="$(require_mcp_mail_token)"
 fi
 
 log_step "Preparing project-local .claude/settings.json"
@@ -91,7 +82,7 @@ write_atomic "$SETTINGS_PATH" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
+      "type": "streamable_http",
       "url": "${_URL}",
       "headers": {${AUTH_HEADER_LINE}}
     }
@@ -125,7 +116,7 @@ write_atomic "$LOCAL_SETTINGS_PATH" <<JSON
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
+      "type": "streamable_http",
       "url": "${_URL}",
       "headers": {${AUTH_HEADER_LINE}}
     }
@@ -194,7 +185,7 @@ else
 {
   "mcpServers": {
     "mcp-agent-mail": {
-      "type": "http",
+      "type": "streamable_http",
       "url": "${_URL}",
       "headers": {${AUTH_HEADER_LINE}}
     }
@@ -286,4 +277,3 @@ else
 fi
 
 log_ok "==> Done."; _print "Open your project in Claude Code; it should auto-detect the project-level .claude/settings.json."
-

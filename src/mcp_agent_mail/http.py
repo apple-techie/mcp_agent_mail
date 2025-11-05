@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hmac
 import importlib
 import json
 import logging
@@ -18,7 +19,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.exc import NoResultFound
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -33,7 +34,7 @@ from .app import (
     update_project_sibling_status,
 )
 from .config import Settings, get_settings
-from .db import ensure_schema, get_session
+from .db import ensure_schema, get_backend_name, get_session
 from .storage import (
     archive_write_lock,
     collect_lock_status,
@@ -143,6 +144,84 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         if auth_header != f"Bearer {self._token}":
             return JSONResponse({"detail": "Unauthorized"}, status_code=status.HTTP_401_UNAUTHORIZED)
         return await call_next(request)
+
+
+class BasicAuthUpgradeMiddleware(BaseHTTPMiddleware):
+    """Optional Basic Auth handler that swaps credentials for the configured bearer token.
+
+    Designed for environments where a reverse proxy cannot inject the bearer header. Requests
+    hitting configured path prefixes receive a Basic challenge; valid credentials are rewritten
+    into the expected bearer token so the rest of the stack remains unchanged.
+    """
+
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        username: str,
+        password: str,
+        bearer_token: str,
+        realm: str,
+        path_prefixes: list[str],
+    ) -> None:
+        super().__init__(app)
+        self._username = username
+        self._password = password
+        self._realm = realm or "Agent Mail"
+        self._bearer_token = bearer_token
+        normalized = []
+        for prefix in path_prefixes or []:
+            prefix = prefix.strip()
+            if not prefix:
+                continue
+            if not prefix.startswith("/"):
+                prefix = "/" + prefix
+            if len(prefix) > 1 and prefix.endswith("/"):
+                prefix = prefix[:-1]
+            normalized.append(prefix)
+        self._paths = normalized or ["/mail"]
+
+    def _path_matches(self, path: str) -> bool:
+        return any(path == prefix or path.startswith(prefix + "/") for prefix in self._paths)
+
+    def _inject_bearer(self, scope: Scope) -> None:
+        header_value = f"Bearer {self._bearer_token}".encode("latin1")
+        headers = list(scope["headers"])
+        for idx, (key, _) in enumerate(headers):
+            if key == b"authorization":
+                headers[idx] = (b"authorization", header_value)
+                break
+        else:
+            headers.append((b"authorization", header_value))
+        scope["headers"] = headers
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+        if request.method == "OPTIONS" or request.url.path.startswith("/health/"):
+            return await call_next(request)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return await call_next(request)
+        if not self._path_matches(request.url.path):
+            return await call_next(request)
+        if auth_header.startswith("Basic "):
+            payload = auth_header.split(" ", 1)[1]
+            try:
+                decoded = base64.b64decode(payload).decode("utf-8")
+                username, password = decoded.split(":", 1)
+            except Exception:
+                return PlainTextResponse(
+                    "Invalid credentials",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    headers={"WWW-Authenticate": f'Basic realm="{self._realm}"'},
+                )
+            if hmac.compare_digest(username, self._username) and hmac.compare_digest(password, self._password):
+                self._inject_bearer(request.scope)
+                return await call_next(request)
+        return PlainTextResponse(
+            "Authentication required",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": f'Basic realm="{self._realm}"'},
+        )
 
 
 class SecurityAndRateLimitMiddleware(BaseHTTPMiddleware):
@@ -839,6 +918,20 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
         or getattr(settings.http, "rbac_enabled", True)
     ):
         fastapi_app.add_middleware(SecurityAndRateLimitMiddleware, settings=settings)
+    if (
+        settings.http.basic_auth_enabled
+        and settings.http.basic_auth_username
+        and settings.http.basic_auth_password
+        and settings.http.bearer_token
+    ):
+        fastapi_app.add_middleware(
+            BasicAuthUpgradeMiddleware,
+            username=settings.http.basic_auth_username,
+            password=settings.http.basic_auth_password,
+            bearer_token=settings.http.bearer_token,
+            realm=settings.http.basic_auth_realm or "Agent Mail",
+            path_prefixes=settings.http.basic_auth_path_prefixes or [],
+        )
     # Bearer auth for non-localhost only; allow localhost unauth optionally for seamless local dev
     if settings.http.bearer_token:
         fastapi_app.add_middleware(
@@ -852,6 +945,7 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
         fastapi_app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors.origins or ["*"],
+            allow_origin_regex=settings.cors.allow_origin_regex,
             allow_credentials=settings.cors.allow_credentials,
             allow_methods=settings.cors.allow_methods or ["*"],
             allow_headers=settings.cors.allow_headers or ["*"],
@@ -1342,48 +1436,38 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                 )
                 agents = [{"id": r[0], "name": r[1], "program": r[2], "model": r[3]} for r in agents_q.fetchall()]
                 matched_messages: list[dict] = []
+                backend = get_backend_name()
+                tokens: list[dict[str, str]] = []
                 if q and q.strip():
-                    # Prefer FTS5 when available (fts_messages maintained by triggers)
                     fts_expr, like_pat, like_scope, tokens = _parse_fts_query(q, scope)
                     weights = (0.0, 3.0, 1.0) if (boost or 0) else (0.0, 1.0, 1.0)
-                    fts_sql = (
-                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
-                        "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18) AS body_snippet, "
-                        "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18)) - length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18), '<mark>', ''))) / 6 AS hits "
-                        "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
-                        "WHERE m.project_id = :pid AND fts_messages MATCH :q "
-                        + (
-                            "ORDER BY m.created_ts DESC "
-                            if (order or "relevance") == "time"
-                            else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
-                        )
-                        + "LIMIT 50"
-                    )
-                    try:
-                        search = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q})
-                        matched_messages = [
-                            {
-                                "id": r[0],
-                                "subject": r[1],
-                                "sender": r[2],
-                                "created": str(r[3]),
-                                "importance": r[4],
-                                "thread_id": r[5],
-                                "snippet": r[6],
-                                "hits": int(r[7] or 0),
-                            }
-                            for r in search.fetchall()
-                        ]
-                    except Exception:
-                        # Fallback to LIKE if FTS not available
+
+                    async def _run_like_fallback() -> list[dict]:
                         if like_scope == "subject":
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.subject LIKE :pat ORDER BY m.created_ts DESC LIMIT 50"
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND m.subject LIKE :pat "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
                         elif like_scope == "body":
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.body_md LIKE :pat ORDER BY m.created_ts DESC LIMIT 50"
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND m.body_md LIKE :pat "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
                         else:
-                            like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) ORDER BY m.created_ts DESC LIMIT 50"
-                        search = await session.execute(text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%"})
-                        matched_messages = [
+                            like_sql = (
+                                "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                                "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                                "WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) "
+                                "ORDER BY m.created_ts DESC LIMIT 50"
+                            )
+                        rows = await session.execute(
+                            text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%"}
+                        )
+                        return [
                             {
                                 "id": r[0],
                                 "subject": r[1],
@@ -1394,8 +1478,81 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                                 "snippet": "",
                                 "hits": 0,
                             }
-                            for r in search.fetchall()
+                            for r in rows.fetchall()
                         ]
+
+                    if "sqlite" in backend:
+                        fts_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                            "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18) AS body_snippet, "
+                            "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18)) - "
+                            "length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 18), '<mark>', ''))) / 6 AS hits "
+                            "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND fts_messages MATCH :q "
+                            + (
+                                "ORDER BY m.created_ts DESC "
+                                if (order or "relevance") == "time"
+                                else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
+                            )
+                            + "LIMIT 50"
+                        )
+                        try:
+                            search = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q})
+                            matched_messages = [
+                                {
+                                    "id": r[0],
+                                    "subject": r[1],
+                                    "sender": r[2],
+                                    "created": str(r[3]),
+                                    "importance": r[4],
+                                    "thread_id": r[5],
+                                    "snippet": r[6],
+                                    "hits": int(r[7] or 0),
+                                }
+                                for r in search.fetchall()
+                            ]
+                        except Exception:
+                            matched_messages = await _run_like_fallback()
+                    elif backend.startswith("postgres"):
+                        order_mode = (order or "relevance") or "relevance"
+                        rank_expr = "ts_rank_cd(m.search_vector, websearch_to_tsquery('english', :q))"
+                        snippet_expr = (
+                            "ts_headline('english', m.body_md, websearch_to_tsquery('english', :q), "
+                            "'StartSel=<mark>, StopSel=</mark>, HighlightAll=true, MaxFragments=3, MaxWords=18, MinWords=3')"
+                        )
+                        order_clause = (
+                            "ORDER BY m.created_ts DESC "
+                            if order_mode == "time"
+                            else f"ORDER BY {rank_expr} DESC, m.created_ts DESC "
+                        )
+                        pg_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                            f"{snippet_expr} AS body_snippet, "
+                            f"{rank_expr} AS search_rank "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.search_vector @@ websearch_to_tsquery('english', :q) "
+                            + order_clause
+                            + "LIMIT 50"
+                        )
+                        try:
+                            rows = await session.execute(text(pg_sql), {"pid": pid, "q": q})
+                            matched_messages = [
+                                {
+                                    "id": r[0],
+                                    "subject": r[1],
+                                    "sender": r[2],
+                                    "created": str(r[3]),
+                                    "importance": r[4],
+                                    "thread_id": r[5],
+                                    "snippet": r[6] or "",
+                                    "hits": 0,
+                                }
+                                for r in rows.fetchall()
+                            ]
+                        except Exception:
+                            matched_messages = await _run_like_fallback()
+                    else:
+                        matched_messages = await _run_like_fallback()
             return await _render(
                 "mail_project.html",
                 project={"id": pid, "slug": prow[1], "human_key": prow[2]},
@@ -1982,47 +2139,37 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                 if not prow:
                     return await _render("error.html", message="Project not found")
                 pid = int(prow[0])
+                backend = get_backend_name()
+                tokens = []
                 fts_expr, like_pat, like_scope, tokens = _parse_fts_query(q, scope)
                 weights = (0.0, 3.0, 1.0) if (boost or 0) else (0.0, 1.0, 1.0)
-                fts_sql = (
-                    "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
-                    "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22) AS body_snippet, "
-                    "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22)) - length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22), '<mark>', ''))) / 6 AS hits "
-                    "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
-                    "WHERE m.project_id = :pid AND fts_messages MATCH :q "
-                    + (
-                        "ORDER BY m.created_ts DESC "
-                        if (order or "relevance") == "time"
-                        else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
-                    )
-                    + "LIMIT :lim"
-                )
-                try:
-                    rows = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q, "lim": limit})
-                    results = [
-                        {
-                            "id": r[0],
-                            "subject": r[1],
-                            "from": r[2],
-                            "created": str(r[3]),
-                            "importance": r[4],
-                            "thread_id": r[5],
-                            "snippet": r[6],
-                            "hits": int(r[7] or 0),
-                        }
-                        for r in rows.fetchall()
-                    ]
-                except Exception:
+
+                async def _run_like_fallback() -> list[dict]:
                     if like_scope == "subject":
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.subject LIKE :pat ORDER BY m.created_ts DESC LIMIT :lim"
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.subject LIKE :pat "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
                     elif like_scope == "body":
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND m.body_md LIKE :pat ORDER BY m.created_ts DESC LIMIT :lim"
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND m.body_md LIKE :pat "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
                     else:
-                        like_sql = "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id FROM messages m JOIN agents s ON s.id = m.sender_id WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) ORDER BY m.created_ts DESC LIMIT :lim"
-                    rows = await session.execute(
+                        like_sql = (
+                            "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id "
+                            "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                            "WHERE m.project_id = :pid AND (m.subject LIKE :pat OR m.body_md LIKE :pat) "
+                            "ORDER BY m.created_ts DESC LIMIT :lim"
+                        )
+                    rows_local = await session.execute(
                         text(like_sql), {"pid": pid, "pat": like_pat or f"%{q}%", "lim": limit}
                     )
-                    results = [
+                    return [
                         {
                             "id": r[0],
                             "subject": r[1],
@@ -2033,8 +2180,81 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                             "snippet": "",
                             "hits": 0,
                         }
-                        for r in rows.fetchall()
+                        for r in rows_local.fetchall()
                     ]
+
+                if "sqlite" in backend:
+                    fts_sql = (
+                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                        "snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22) AS body_snippet, "
+                        "(length(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22)) - "
+                        "length(replace(snippet(fts_messages, 2, '<mark>', '</mark>', '…', 22), '<mark>', ''))) / 6 AS hits "
+                        "FROM fts_messages JOIN messages m ON m.id = fts_messages.rowid JOIN agents s ON s.id = m.sender_id "
+                        "WHERE m.project_id = :pid AND fts_messages MATCH :q "
+                        + (
+                            "ORDER BY m.created_ts DESC "
+                            if (order or "relevance") == "time"
+                            else f"ORDER BY bm25(fts_messages, {weights[0]}, {weights[1]}, {weights[2]}) "
+                        )
+                        + "LIMIT :lim"
+                    )
+                    try:
+                        rows = await session.execute(text(fts_sql), {"pid": pid, "q": fts_expr or q, "lim": limit})
+                        results = [
+                            {
+                                "id": r[0],
+                                "subject": r[1],
+                                "from": r[2],
+                                "created": str(r[3]),
+                                "importance": r[4],
+                                "thread_id": r[5],
+                                "snippet": r[6],
+                                "hits": int(r[7] or 0),
+                            }
+                            for r in rows.fetchall()
+                        ]
+                    except Exception:
+                        results = await _run_like_fallback()
+                elif backend.startswith("postgres"):
+                    order_mode = (order or "relevance") or "relevance"
+                    rank_expr = "ts_rank_cd(m.search_vector, websearch_to_tsquery('english', :q))"
+                    snippet_expr = (
+                        "ts_headline('english', m.body_md, websearch_to_tsquery('english', :q), "
+                        "'StartSel=<mark>, StopSel=</mark>, HighlightAll=true, MaxFragments=3, MaxWords=22, MinWords=3')"
+                    )
+                    order_clause = (
+                        "ORDER BY m.created_ts DESC "
+                        if order_mode == "time"
+                        else f"ORDER BY {rank_expr} DESC, m.created_ts DESC "
+                    )
+                    pg_sql = (
+                        "SELECT m.id, m.subject, s.name, m.created_ts, m.importance, m.thread_id, "
+                        f"{snippet_expr} AS body_snippet, "
+                        f"{rank_expr} AS search_rank "
+                        "FROM messages m JOIN agents s ON s.id = m.sender_id "
+                        "WHERE m.project_id = :pid AND m.search_vector @@ websearch_to_tsquery('english', :q) "
+                        + order_clause
+                        + "LIMIT :lim"
+                    )
+                    try:
+                        rows = await session.execute(text(pg_sql), {"pid": pid, "q": q, "lim": limit})
+                        results = [
+                            {
+                                "id": r[0],
+                                "subject": r[1],
+                                "from": r[2],
+                                "created": str(r[3]),
+                                "importance": r[4],
+                                "thread_id": r[5],
+                                "snippet": r[6] or "",
+                                "hits": 0,
+                            }
+                            for r in rows.fetchall()
+                        ]
+                    except Exception:
+                        results = await _run_like_fallback()
+                else:
+                    results = await _run_like_fallback()
             return await _render(
                 "mail_search.html",
                 project={"slug": prow[1], "human_key": prow[2]},

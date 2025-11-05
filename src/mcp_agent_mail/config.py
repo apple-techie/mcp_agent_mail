@@ -7,10 +7,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final
 
-from decouple import Config as DecoupleConfig, RepositoryEnv
+from decouple import Config as DecoupleConfig, RepositoryEnv, config as decouple_autoconfig
 
 _DOTENV_PATH: Final[Path] = Path(".env")
-_decouple_config: Final[DecoupleConfig] = DecoupleConfig(RepositoryEnv(str(_DOTENV_PATH)))
+
+# Use AutoConfig to gracefully fall back to environment variables if .env is missing
+# This is critical for Docker/container deployments where .env may not be mounted
+if _DOTENV_PATH.exists():
+    _decouple_config: Final[DecoupleConfig] = DecoupleConfig(RepositoryEnv(str(_DOTENV_PATH)))
+else:
+    # Fall back to environment variables only (no .env file)
+    _decouple_config: Final[DecoupleConfig] = decouple_autoconfig  # type: ignore[assignment]
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,6 +56,11 @@ class HttpSettings:
     rbac_writer_roles: list[str]
     rbac_default_role: str
     rbac_readonly_tools: list[str]
+    basic_auth_enabled: bool
+    basic_auth_username: str
+    basic_auth_password: str
+    basic_auth_realm: str
+    basic_auth_path_prefixes: list[str]
     # Dev convenience
     allow_localhost_unauthenticated: bool
 
@@ -82,6 +94,7 @@ class CorsSettings:
     allow_credentials: bool
     allow_methods: list[str]
     allow_headers: list[str]
+    allow_origin_regex: Optional[str]
 
 
 @dataclass(slots=True, frozen=True)
@@ -219,6 +232,11 @@ def get_settings() -> Settings:
             "HTTP_RBAC_READONLY_TOOLS",
             default="health_check,fetch_inbox,whois,search_messages,summarize_thread,summarize_threads",
         ),
+        basic_auth_enabled=_bool(_decouple_config("HTTP_BASIC_AUTH_ENABLED", default="false"), default=False),
+        basic_auth_username=_decouple_config("HTTP_BASIC_AUTH_USERNAME", default=""),
+        basic_auth_password=_decouple_config("HTTP_BASIC_AUTH_PASSWORD", default=""),
+        basic_auth_realm=_decouple_config("HTTP_BASIC_AUTH_REALM", default="Agent Mail"),
+        basic_auth_path_prefixes=_csv("HTTP_BASIC_AUTH_PATHS", default="/mail"),
         allow_localhost_unauthenticated=_bool(_decouple_config("HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED", default="true"), default=True),
     )
 
@@ -243,6 +261,7 @@ def get_settings() -> Settings:
         allow_credentials=_bool(_decouple_config("HTTP_CORS_ALLOW_CREDENTIALS", default="false"), default=False),
         allow_methods=_csv("HTTP_CORS_ALLOW_METHODS", default="*"),
         allow_headers=_csv("HTTP_CORS_ALLOW_HEADERS", default="*"),
+        allow_origin_regex=_decouple_config("HTTP_CORS_ALLOW_ORIGIN_REGEX", default=r"https://.*\.vercel\.app") or None,
     )
 
     def _float(value: str, *, default: float) -> float:

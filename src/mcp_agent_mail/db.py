@@ -219,7 +219,13 @@ async def ensure_schema(settings: Settings | None = None) -> None:
             # (WAL mode is set automatically via event listener in _build_engine)
             await conn.run_sync(SQLModel.metadata.create_all)
             # Setup FTS and custom indexes
-            await conn.run_sync(_setup_fts)
+            backend = engine.url.get_backend_name()
+            if "sqlite" in backend:
+                await conn.run_sync(_setup_sqlite_features)
+            elif backend.startswith("postgres"):
+                await conn.run_sync(_setup_postgres_features)
+            else:
+                await conn.run_sync(_setup_common_indexes)
         _schema_ready = True
 
 
@@ -232,7 +238,25 @@ def reset_database_state() -> None:
     _schema_lock = None
 
 
-def _setup_fts(connection) -> None:
+def _setup_common_indexes(connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_messages_created_ts ON messages(created_ts)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_messages_importance ON messages(importance)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_file_reservations_expires_ts ON file_reservations(expires_ts)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_message_recipients_agent ON message_recipients(agent_id)"
+    )
+
+
+def _setup_sqlite_features(connection) -> None:
     connection.exec_driver_sql(
         "CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(message_id UNINDEXED, subject, body)"
     )
@@ -266,21 +290,64 @@ def _setup_fts(connection) -> None:
         END;
         """
     )
-    # Additional performance indexes for common access patterns
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS idx_messages_created_ts ON messages(created_ts)"
-    )
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id)"
-    )
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS idx_messages_importance ON messages(importance)"
-    )
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS idx_file_reservations_expires_ts ON file_reservations(expires_ts)"
-    )
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS idx_message_recipients_agent ON message_recipients(agent_id)"
-    )
+    _setup_common_indexes(connection)
 
 
+def _setup_postgres_features(connection) -> None:
+    connection.exec_driver_sql(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'messages'
+                  AND column_name = 'search_vector'
+                  AND table_schema = current_schema()
+            ) THEN
+                ALTER TABLE messages ADD COLUMN search_vector tsvector;
+            END IF;
+        END $$;
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        CREATE OR REPLACE FUNCTION messages_update_search_vector() RETURNS trigger AS $$
+        BEGIN
+            NEW.search_vector :=
+                setweight(to_tsvector('simple', coalesce(NEW.subject, '')), 'A')
+                ||
+                setweight(to_tsvector('english', coalesce(NEW.body_md, '')), 'B');
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        """
+    )
+    connection.exec_driver_sql("DROP TRIGGER IF EXISTS messages_search_vector_tgr ON messages;")
+    connection.exec_driver_sql(
+        """
+        CREATE TRIGGER messages_search_vector_tgr
+        BEFORE INSERT OR UPDATE ON messages
+        FOR EACH ROW EXECUTE FUNCTION messages_update_search_vector();
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        UPDATE messages
+        SET search_vector =
+            setweight(to_tsvector('simple', coalesce(subject, '')), 'A')
+            ||
+            setweight(to_tsvector('english', coalesce(body_md, '')), 'B');
+        """
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS idx_messages_search_vector ON messages USING GIN (search_vector)"
+    )
+    _setup_common_indexes(connection)
+
+
+def get_backend_name() -> str:
+    """Return the SQLAlchemy backend/dialect name for the configured engine."""
+    engine = get_engine()
+    backend = engine.url.get_backend_name()
+    return backend

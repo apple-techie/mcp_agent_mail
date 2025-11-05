@@ -229,7 +229,11 @@ The server ships a lightweight, server‑rendered Web UI for humans. It lets you
 
 ### Launching the Web UI
 
-Recommended (simple):
+Recommended (hosted):
+
+- Visit `https://mcp.gauntlit.ai/mail` (Basic auth user `agent`, password `GauntLit25`). The middleware will convert the Basic credentials into the required bearer token automatically, so you do **not** need to paste secrets into the browser.
+
+Local development (simple):
 
 ```bash
 scripts/run_server_with_token.sh
@@ -869,7 +873,13 @@ Common variables you may set:
 | `HTTP_CORS_ALLOW_CREDENTIALS` | `false` | Allow credentials on CORS |
 | `HTTP_CORS_ALLOW_METHODS` | `*` | CSV of allowed methods or `*` |
 | `HTTP_CORS_ALLOW_HEADERS` | `*` | CSV of allowed headers or `*` |
+| `HTTP_CORS_ALLOW_ORIGIN_REGEX` | `https://.*\.vercel\.app` | Regex pattern passed to CORSMiddleware; leave blank to disable |
 | `HTTP_BEARER_TOKEN` |  | Static bearer token (only when JWT disabled) |
+| `HTTP_BASIC_AUTH_ENABLED` | `false` | Enable built-in Basic Auth → Bearer upgrade middleware |
+| `HTTP_BASIC_AUTH_USERNAME` |  | Username challenged when fallback Basic Auth is enabled |
+| `HTTP_BASIC_AUTH_PASSWORD` |  | Password for fallback Basic Auth |
+| `HTTP_BASIC_AUTH_REALM` | `Agent Mail` | Realm string shown in the browser prompt |
+| `HTTP_BASIC_AUTH_PATHS` | `/mail` | CSV of path prefixes that should require Basic Auth (empty = all) |
 | `HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED` | `true` | Allow localhost requests without auth (dev convenience) |
 | `HTTP_OTEL_ENABLED` | `false` | Enable OpenTelemetry instrumentation |
 | `OTEL_SERVICE_NAME` | `mcp-agent-mail` | Service name for telemetry |
@@ -918,6 +928,53 @@ Common variables you may set:
 | `QUOTA_INBOX_LIMIT_COUNT` | `0` | Max inbox messages per agent (0=unlimited) |
 | `RETENTION_IGNORE_PROJECT_PATTERNS` | `demo,test*,testproj*,testproject,backendproj*,frontendproj*` | CSV of project patterns to ignore in retention/quota reports |
 | `AGENT_NAME_ENFORCEMENT_MODE` | `coerce` | Agent naming policy: `strict` (reject invalid adjective+noun names), `coerce` (auto-generate if invalid), `always_auto` (always auto-generate) |
+
+### `.env` and deployment recipes
+
+`python-decouple` reads exclusively from a `.env` file located in the working directory. **The file must exist**, even inside containers – if it is missing, the server exits with `FileNotFoundError`. In development copy `.env.example` → `.env` and fill in the values you need. In production (Dokploy, Docker Swarm, etc.) mount or generate `.env` alongside the application code so the container can read it.
+
+#### Hosted (Gauntlit Cloud)
+
+1. Obtain your bearer token from the Gauntlit ops team. **Do not commit it to the repo.**
+2. Export the following variables in any shell where you run integration scripts or manual curl calls:
+   ```bash
+   export MCP_MAIL_URL="https://mcp.gauntlit.ai/mcp/"
+   export MCP_MAIL_BEARER_TOKEN="<your-bearer-token>"
+   ```
+   Optionally set `HTTP_BEARER_TOKEN` to the same value for compatibility with older tooling.
+3. Configure your MCP client by running the `scripts/integrate_*` helper that matches your IDE/agent (Codex, Cursor, Claude Code, Windsurf, etc.). Each helper now reads `MCP_MAIL_URL`/`MCP_MAIL_BEARER_TOKEN` instead of generating new tokens.
+4. The `/mail` UI is served from the same host. Use the Basic credentials `agent / GauntLit25` and the middleware will rewrite the request into your bearer token automatically.
+
+#### Localhost / uv (development only)
+
+1. `cp .env.example .env` and set at least `HTTP_BEARER_TOKEN` plus a database URL (SQLite is fine for single-user).
+2. Install uv and sync dependencies: `uv python install 3.14 && uv venv -p 3.14 && source .venv/bin/activate && uv sync`.
+3. Run the Typer CLI entrypoint: `uv run python -m mcp_agent_mail.cli serve-http --host 127.0.0.1 --port 8765`.
+4. Hit `http://127.0.0.1:8765/mcp/` from your MCP client, or browse `http://127.0.0.1:8765/mail` (set `HTTP_BASIC_AUTH_ENABLED=true` if you want a browser prompt rather than a bearer header).
+
+#### Dokploy / Docker Swarm
+
+1. Keep `.env` in the repo root (or add it to the Dokploy application as a mounted file). Every variable you configure in the Dokploy UI should also live in `.env` so decouple can read it at runtime.
+2. The start command should always invoke the Typer CLI: `./.venv/bin/python -m mcp_agent_mail.cli serve-http --host 0.0.0.0 --port 8765`. The provided `nixpacks.toml` already does this.
+3. When you need in-browser access to `/mail`, either configure your reverse proxy (Traefik, nginx, Cloudflare, etc.) to inject the bearer token **or** enable the fallback middleware built into the app by setting:
+   ```bash
+   HTTP_BASIC_AUTH_ENABLED=true
+   HTTP_BASIC_AUTH_USERNAME=agent
+   HTTP_BASIC_AUTH_PASSWORD=super_secret
+   HTTP_BASIC_AUTH_PATHS=/mail
+   ```
+   Requests to `/mail` will receive a Basic prompt and, on success, the middleware rewrites the request into the required bearer token so existing MCP clients continue to work unmodified. Leave `HTTP_BASIC_AUTH_ENABLED=false` if your proxy already handles auth.
+4. Traefik example (optional): apply Basic Auth + header injection only on `/mail` and let raw API calls continue using bearer headers.
+
+#### Vercel / other reverse proxies
+
+Vercel’s serverless platform is not ideal for long-lived uvicorn processes, but you can front the MCP server with Vercel/Cloudflare/etc. via rewrites or edge middleware:
+
+- Point `/mail` at the running MCP instance and add Basic Auth in the proxy (or set `HTTP_BASIC_AUTH_*` in the app so it challenges directly).
+- For API calls, set a rewrite that injects `Authorization: Bearer <token>` so MCP-compatible tools keep working without manual configuration.
+- Remember to keep `.env` with the same values in the deployed folder (Vercel’s build output should include the file or you can generate it via a build step).
+
+These recipes cover the common cases; feel free to adapt them to your infrastructure as long as `.env` is present and the Typer CLI entrypoint is used.
 
 ## Development quick start
 
@@ -980,11 +1037,15 @@ This section has been removed to keep the README focused. See API Quick Referenc
 
 ## Security and ops
 
+- Database
+  - The default SQLite backend is ideal for local smoke tests, but for multi-agent production usage switch to PostgreSQL via `DATABASE_URL`. The server now auto-configures `tsvector` search indexes when it detects a Postgres URL (full-text search routes fall back to SQL LIKE if needed).
+  - When running on Postgres, ensure the application container can reach the database host directly (e.g., Dokploy service DNS such as `mcp-agent-mail-db-xxxxx`) and that credentials are supplied through the environment.
 - Transport
   - HTTP-only (Streamable HTTP). Place behind a reverse proxy (e.g., NGINX) with TLS termination for production
 - Auth
   - Optional JWT (HS*/JWKS) via HTTP middleware; enable with `HTTP_JWT_ENABLED=true`
   - Static bearer token (`HTTP_BEARER_TOKEN`) is independent of JWT; when set, BearerAuth protects all routes (including UI). You may use it alone or together with JWT.
+  - For production deployments disable unauthenticated localhost access (`HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED=false`) so that every request (including the web UI) must present credentials.
   - When JWKS is configured (`HTTP_JWT_JWKS_URL`), incoming JWTs must include a matching `kid` header; tokens without `kid` or with unknown `kid` are rejected
   - Starter RBAC (reader vs writer) using role configuration; see `HTTP_RBAC_*` settings
 - Reverse proxy + TLS (minimal example)
