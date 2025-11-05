@@ -19,6 +19,8 @@ async def test_http_jwt_rbac_and_rate_limit(monkeypatch):
     monkeypatch.setenv("HTTP_RBAC_ENABLED", "true")
     monkeypatch.setenv("HTTP_RBAC_READER_ROLES", "reader")
     monkeypatch.setenv("HTTP_RBAC_WRITER_ROLES", "writer")
+    monkeypatch.setenv("HTTP_BEARER_GRANTS_WRITER", "false")
+    monkeypatch.setenv("HTTP_BEARER_GRANTS_WRITER", "false")
     # Enable rate limiting with small threshold
     monkeypatch.setenv("HTTP_RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("HTTP_RATE_LIMIT_TOOLS_PER_MINUTE", "2")
@@ -63,3 +65,28 @@ async def test_http_jwt_rbac_and_rate_limit(monkeypatch):
         r2 = await client.post(settings.http.path, headers=headers, json=_rpc("tools/call", {"name": "health_check", "arguments": {}}))
         assert r2.status_code == 429
 
+
+@pytest.mark.asyncio
+async def test_static_bearer_token_grants_writer(monkeypatch):
+    monkeypatch.setenv("HTTP_BEARER_TOKEN", "writer123")
+    monkeypatch.setenv("HTTP_RBAC_ENABLED", "true")
+    monkeypatch.setenv("HTTP_RBAC_READER_ROLES", "reader")
+    monkeypatch.setenv("HTTP_RBAC_WRITER_ROLES", "writer")
+    monkeypatch.setenv("HTTP_BEARER_GRANTS_WRITER", "true")
+    monkeypatch.setenv("HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED", "false")
+    with contextlib.suppress(Exception):
+        _config.clear_settings_cache()
+    settings = _config.get_settings()
+
+    server = build_mcp_server()
+    app = build_http_app(settings, server)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": "Bearer writer123"}
+        r = await client.post(
+            settings.http.path,
+            headers=headers,
+            json=_rpc("tools/call", {"name": "ensure_project", "arguments": {"human_key": "/data/projects/http_rbac"}}),
+        )
+        assert r.status_code == 200

@@ -785,6 +785,19 @@ def build_search_indexes(snapshot_path: Path) -> bool:
         return False
 
 
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True if table contains the column (guards older snapshots)."""
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.OperationalError:
+        return False
+    for row in rows:
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        if name == column:
+            return True
+    return False
+
+
 def summarize_snapshot(
     snapshot_path: Path,
     *,
@@ -796,17 +809,20 @@ def summarize_snapshot(
     with sqlite3.connect(str(snapshot_path)) as conn:
         conn.row_factory = sqlite3.Row
         total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        total_threads = conn.execute(
-            """
-            SELECT COUNT(DISTINCT(
-                CASE WHEN thread_id IS NULL OR thread_id = ''
-                     THEN printf('msg:%d', id)
-                     ELSE thread_id
-                END
-            ))
-            FROM messages
-            """
-        ).fetchone()[0]
+        if _table_has_column(conn, "messages", "thread_id"):
+            total_threads = conn.execute(
+                """
+                SELECT COUNT(DISTINCT(
+                    CASE WHEN thread_id IS NULL OR thread_id = ''
+                         THEN printf('msg:%d', id)
+                         ELSE thread_id
+                    END
+                ))
+                FROM messages
+                """
+            ).fetchone()[0]
+        else:
+            total_threads = total_messages
         projects = [
             {"slug": row["slug"], "human_key": row["human_key"]}
             for row in conn.execute("SELECT slug, human_key FROM projects ORDER BY slug")

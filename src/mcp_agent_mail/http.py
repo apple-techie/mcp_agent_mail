@@ -257,6 +257,8 @@ class SecurityAndRateLimitMiddleware(BaseHTTPMiddleware):
                 self._redis = Redis.from_url(settings.http.rate_limit_redis_url)
             except Exception:
                 self._redis = None
+        self._static_bearer_token = getattr(settings.http, "bearer_token", None) or None
+        self._bearer_grants_writer = bool(getattr(settings.http, "bearer_grants_writer", True))
 
     async def _decode_jwt(self, token: str) -> dict | None:
         """Validate and decode JWT, returning claims or None on failure."""
@@ -419,6 +421,14 @@ class SecurityAndRateLimitMiddleware(BaseHTTPMiddleware):
                 roles = {self._default_role}
         else:
             roles = {self._default_role}
+            auth_header = request.headers.get("Authorization", "")
+            if (
+                auth_header.startswith("Bearer ")
+                and self._static_bearer_token
+                and self._bearer_grants_writer
+                and hmac.compare_digest(auth_header.split(" ", 1)[1].strip(), self._static_bearer_token)
+            ):
+                roles.add("writer")
             # Elevate localhost to writer when unauthenticated localhost is allowed
             try:
                 client_host = request.client.host if request.client else ""

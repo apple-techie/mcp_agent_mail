@@ -874,7 +874,8 @@ Common variables you may set:
 | `HTTP_CORS_ALLOW_METHODS` | `*` | CSV of allowed methods or `*` |
 | `HTTP_CORS_ALLOW_HEADERS` | `*` | CSV of allowed headers or `*` |
 | `HTTP_CORS_ALLOW_ORIGIN_REGEX` | `https://.*\.vercel\.app` | Regex pattern passed to CORSMiddleware; leave blank to disable |
-| `HTTP_BEARER_TOKEN` |  | Static bearer token (only when JWT disabled) |
+| `HTTP_BEARER_TOKEN` |  | Static bearer token; callers presenting it gain writer access when JWT is disabled |
+| `HTTP_BEARER_GRANTS_WRITER` | `true` | Toggle whether the static bearer token escalates requests to writer role |
 | `HTTP_BASIC_AUTH_ENABLED` | `false` | Enable built-in Basic Auth → Bearer upgrade middleware |
 | `HTTP_BASIC_AUTH_USERNAME` |  | Username challenged when fallback Basic Auth is enabled |
 | `HTTP_BASIC_AUTH_PASSWORD` |  | Password for fallback Basic Auth |

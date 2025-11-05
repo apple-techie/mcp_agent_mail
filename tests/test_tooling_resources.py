@@ -100,12 +100,12 @@ async def test_tooling_locks_resource(isolated_env):
     settings = _config.get_settings()
     storage_root = Path(settings.storage.root).expanduser().resolve()
     storage_root.mkdir(parents=True, exist_ok=True)
-    lock_path = storage_root / ".archive.lock"
-    lock_path.touch()
-    metadata_path = storage_root / ".archive.lock.owner.json"
-    metadata_path.write_text(json.dumps({"pid": 999_999, "created_ts": time.time() - 500}), encoding="utf-8")
 
     async with Client(server) as client:
+        lock_path = storage_root / ".archive.lock"
+        lock_path.touch()
+        metadata_path = storage_root / ".archive.lock.owner.json"
+        metadata_path.write_text(json.dumps({"pid": 999_999, "created_ts": time.time() - 500}), encoding="utf-8")
         blocks = await client.read_resource("resource://tooling/locks")
         assert blocks
         payload = json.loads(blocks[0].text or "{}")

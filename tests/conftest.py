@@ -15,6 +15,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HTTP_PORT", "8765")
     monkeypatch.setenv("HTTP_PATH", "/mcp/")
     monkeypatch.setenv("APP_ENVIRONMENT", "test")
+    monkeypatch.setenv("HTTP_BEARER_GRANTS_WRITER", "false")
     storage_root = tmp_path / "storage"
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
     monkeypatch.setenv("GIT_AUTHOR_NAME", "test-agent")

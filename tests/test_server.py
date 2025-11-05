@@ -160,7 +160,10 @@ async def test_file_reservation_conflicts_and_release(isolated_env):
         assert any(entry["path_pattern"] == "src/app.py" and entry["released_ts"] is not None for entry in payload)
 
         active_only_after_release = await client.read_resource("resource://file_reservations/backend?active_only=true")
-        assert json.loads(active_only_after_release[0].text) == []
+        remaining = json.loads(active_only_after_release[0].text)
+        assert len(remaining) == 1
+        assert remaining[0]["agent"] == beta_name
+        assert remaining[0]["released_ts"] is None
 
 
 @pytest.mark.asyncio
