@@ -94,6 +94,7 @@ class CorsSettings:
     allow_credentials: bool
     allow_methods: list[str]
     allow_headers: list[str]
+    allow_origin_regex: Optional[str]
 
 
 @dataclass(slots=True, frozen=True)
@@ -258,6 +259,7 @@ def get_settings() -> Settings:
         allow_credentials=_bool(_decouple_config("HTTP_CORS_ALLOW_CREDENTIALS", default="false"), default=False),
         allow_methods=_csv("HTTP_CORS_ALLOW_METHODS", default="*"),
         allow_headers=_csv("HTTP_CORS_ALLOW_HEADERS", default="*"),
+        allow_origin_regex=_decouple_config("HTTP_CORS_ALLOW_ORIGIN_REGEX", default=r"https://.*\.vercel\.app") or None,
     )
 
     def _float(value: str, *, default: float) -> float:

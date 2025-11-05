@@ -935,6 +935,7 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
         fastapi_app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors.origins or ["*"],
+            allow_origin_regex=settings.cors.allow_origin_regex,
             allow_credentials=settings.cors.allow_credentials,
             allow_methods=settings.cors.allow_methods or ["*"],
             allow_headers=settings.cors.allow_headers or ["*"],

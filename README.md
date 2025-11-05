@@ -819,6 +819,7 @@ Common variables you may set:
 | `HTTP_CORS_ALLOW_CREDENTIALS` | `false` | Allow credentials on CORS |
 | `HTTP_CORS_ALLOW_METHODS` | `*` | CSV of allowed methods or `*` |
 | `HTTP_CORS_ALLOW_HEADERS` | `*` | CSV of allowed headers or `*` |
+| `HTTP_CORS_ALLOW_ORIGIN_REGEX` | `https://.*\.vercel\.app` | Regex pattern passed to CORSMiddleware; leave blank to disable |
 | `HTTP_BEARER_TOKEN` |  | Static bearer token (only when JWT disabled) |
 | `HTTP_BASIC_AUTH_ENABLED` | `false` | Enable built-in Basic Auth → Bearer upgrade middleware |
 | `HTTP_BASIC_AUTH_USERNAME` |  | Username challenged when fallback Basic Auth is enabled |
