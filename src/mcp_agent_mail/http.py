@@ -1280,7 +1280,7 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                                         JOIN agents recip2 ON recip2.id = mr2.agent_id
                                         WHERE mr2.message_id = m.id
                                         ORDER BY name
-                                    )
+                                    ) AS recipient_list
                                 ),
                                 ''
                             ) AS recipients
@@ -1695,7 +1695,7 @@ def build_http_app(settings: Settings, server=None) -> FastAPI:
                                     JOIN agents recip2 ON recip2.id = mr2.agent_id
                                     WHERE mr2.message_id = m.id
                                     ORDER BY name
-                                )
+                                ) AS recipient_names
                             ),
                             ''
                         ) as recipient_names,

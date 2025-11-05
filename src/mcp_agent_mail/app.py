@@ -331,9 +331,13 @@ def _iso(dt: Any) -> str:
         if isinstance(dt, str):
             try:
                 parsed = datetime.fromisoformat(dt)
-                return parsed.astimezone(timezone.utc).isoformat()
             except Exception:
                 return dt
+            ensured = _ensure_utc(parsed)
+            return ensured.isoformat() if ensured else parsed.isoformat()
+        if isinstance(dt, datetime):
+            ensured_dt = _ensure_utc(dt)
+            return ensured_dt.isoformat() if ensured_dt else dt.isoformat()
         if hasattr(dt, "astimezone"):
             return dt.astimezone(timezone.utc).isoformat()  # type: ignore[no-any-return]
         return str(dt)
